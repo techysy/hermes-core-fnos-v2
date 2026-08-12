@@ -1,0 +1,3 @@
+#!/bin/bash
+# config_callback — no-op (应用设置页已移除, 配置统一走状态页网页 / 安装向导)
+exit 0

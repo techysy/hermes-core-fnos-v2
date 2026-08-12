@@ -1,0 +1,379 @@
+#!/bin/bash
+set -uo pipefail
+
+APP_NAME="${TRIM_APPNAME:-HermesCore}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
+DATA_DIR="${TRIM_PKGVAR:-/vol4/@appdata/${APP_NAME}}"
+
+# 诊断日志（无条件记录，便于排查 fnOS 调用方式）
+DIAG="${DATA_DIR}/core-diag.log"
+mkdir -p "${DATA_DIR}" 2>/dev/null
+{
+    echo "=== $(date '+%F %T') call: '${1:-<none>}' USER=$(id -un) UID=$(id -u) ==="
+    echo "  PWD=$(pwd)"
+    echo "  ARG1=${1:-<none>}"
+    echo "  TRIM_APPDEST=${TRIM_APPDEST:-<unset>}"
+    echo "  TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>}"
+    echo "  TRIM_APPNAME=${TRIM_APPNAME:-<unset>}"
+    echo "  TRIM_SERVICE_PORT=${TRIM_SERVICE_PORT:-<unset>}"
+} >> "${DIAG}" 2>&1
+
+PORT="${TRIM_SERVICE_PORT:-8642}"
+STATUS_PORT=8648
+VENV="${DATA_DIR}/venv"
+HERMES_HOME="${DATA_DIR}/hermes_home"
+CONFIG_FILE="${DATA_DIR}/gateway.env"
+LOG="${DATA_DIR}/core.log"
+PID_FILE="${DATA_DIR}/core.pid"
+STATUS_PID="${DATA_DIR}/status.pid"
+STATUS_LOG="${DATA_DIR}/status.log"
+DASHBOARD_PORT=9119
+DASHBOARD_PID="${DATA_DIR}/dashboard.pid"
+DASHBOARD_LOG="${DATA_DIR}/dashboard.log"
+DASHBOARD_USER="${DASHBOARD_USER:-admin}"
+DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
+# 用 cmd/main 自身所在目录定位 status_server.py (同一目录), 兼容 fnOS 各种 TRIM_APPDEST
+# 优先级: CMD_DIR(与 main 同目录) > APP_DIR/cmd > APP_DIR/target/cmd
+# ⚠️ 绝不用 DATA_DIR 里的 status_server.py (运行数据目录可能残留旧副本, 会覆盖新装的 fpk 代码,
+#    导致升级后运行旧版本) — 2026-08-04 已踩坑: /vol4/@appdata/HermesCore/status_server.py 残留,
+#    新版本号修复一直不生效, 根因就是这里被旧副本抢占。
+CMD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATUS_SRC="${CMD_DIR}/status_server.py"
+[ -f "${APP_DIR}/cmd/status_server.py" ] && STATUS_SRC="${APP_DIR}/cmd/status_server.py"
+[ -f "${APP_DIR}/target/cmd/status_server.py" ] && STATUS_SRC="${APP_DIR}/target/cmd/status_server.py"
+
+log() { echo "[$(date '+%F %T')] $*" >> "${LOG}"; }
+
+# 读取运行配置 (API_SERVER_* + provider keys)
+[ -f "${CONFIG_FILE}" ] && source "${CONFIG_FILE}"
+
+# 内核可执行文件路径检测
+find_hermes_bin() {
+    if [ -x "${VENV}/bin/hermes" ]; then
+        echo "${VENV}/bin/hermes"
+    elif [ -x "${VENV}/bin/python3" ] && [ -f "${VENV}/bin/../lib/python3"*"/site-packages" ]; then
+        echo "${VENV}/bin/hermes"
+    else
+        echo ""
+    fi
+}
+
+setup_plugins() {
+    # 确保消息平台插件就位:
+    #   - 飞书: hermes-lark-streaming 插件 (提供 feishu_platform 适配器). 配置了飞书凭据才装.
+    #   - 微信: 内置适配器, 无需插件 (仅需 WEIXIN_TOKEN/ACCOUNT_ID env, 已 export).
+    if [ -z "${FEISHU_APP_ID:-}" ] && [ -z "${FEISHU_APP_SECRET:-}" ]; then
+        return 0  # 未配置飞书, 跳过
+    fi
+    local HERMES_BIN="${HERMES_BIN:-$(find_hermes_bin)}"
+    [ -x "${HERMES_BIN}" ] || { log "setup_plugins: hermes not found"; return 0; }
+    local PLUGIN_DIR="${HERMES_HOME}/plugins/hermes-lark-streaming"
+    if [ -d "${PLUGIN_DIR}" ]; then
+        log "setup_plugins: hermes-lark-streaming already installed"
+        return 0
+    fi
+    log "setup_plugins: installing hermes-lark-streaming (Feishu plugin)..."
+    "${HERMES_BIN}" plugins install Aowen-Nowor/hermes-lark-streaming >> "${LOG}" 2>&1 \
+        || "${HERMES_BIN}" plugins install https://gitee.com/Aowen-Nowor/hermes-lark-streaming >> "${LOG}" 2>&1
+    if [ -d "${PLUGIN_DIR}" ]; then
+        log "setup_plugins: hermes-lark-streaming installed"
+        # 启用插件 (写入 config.yaml plugins.enabled)
+        "${HERMES_BIN}" plugins enable hermes-lark-streaming >> "${LOG}" 2>&1 || true
+    else
+        log "setup_plugins: hermes-lark-streaming install FAILED (check network)"
+    fi
+}
+
+start() {
+    HERMES_BIN="$(find_hermes_bin)"
+    if [ -z "${HERMES_BIN}" ]; then
+        log "ERROR: hermes not installed in ${VENV}. Run install/upgrade first."
+        echo "ERROR: hermes kernel not installed" >&2
+        return 1
+    fi
+
+    # 已在运行则跳过 (但仍要确保 status server + dashboard 启动 —
+    # 否则 NAS 重启/gateway 残留时 dashboard 不会自启, 2026-08-12 踩坑)
+    if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+        log "already running (pid $(cat "${PID_FILE}"))"
+        start_status_server
+        start_dashboard
+        return 0
+    fi
+    # 端口已被监听（可能是本内核残留进程）
+    if curl -sf -m3 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+        log "port ${PORT} already serving — treating as running"
+        start_status_server
+        start_dashboard
+        return 0
+    fi
+
+    mkdir -p "${HERMES_HOME}"
+    [ ! -f "${HERMES_HOME}/.env" ] && write_env
+    # config.yaml 每次启动都重新生成, 确保用最新的 gateway.env 配置 (ROUTER_API_KEY 等)
+    # 先提取旧 config.yaml 的 platforms 段 (飞书等消息网关配置), 避免覆盖丢失
+    OLD_PLATFORMS=""
+    [ -f "${HERMES_HOME}/config.yaml" ] && OLD_PLATFORMS="$(awk '/^platforms:/{flag=1} flag' "${HERMES_HOME}/config.yaml")"
+    write_config
+
+    export HERMES_HOME
+    # API Server 平台配置 (WebUI 等前端连接的 Gateway 端点)
+    export API_SERVER_ENABLED=true
+    export API_SERVER_HOST="${API_SERVER_HOST:-0.0.0.0}"
+    export API_SERVER_PORT="${API_SERVER_PORT:-${PORT}}"
+    export API_SERVER_KEY="${API_SERVER_KEY:-webui-gateway-key-2026}"
+    # 传递 LLM provider keys
+    export XIAOMI_API_KEY="${XIAOMI_API_KEY:-}"
+    export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
+    # 消息渠道 env (飞书/微信) — gateway.env 是 source 进来的非 export, 需显式 export 给 hermes
+    # 飞书渠道: adapter 读 FEISHU_APP_ID/APP_SECRET/ENCRYPT_KEY/VERIFICATION_TOKEN
+    export FEISHU_APP_ID="${FEISHU_APP_ID:-}"
+    export FEISHU_APP_SECRET="${FEISHU_APP_SECRET:-}"
+    export FEISHU_VERIFICATION_TOKEN="${FEISHU_VERIFICATION_TOKEN:-}"
+    export FEISHU_ENCRYPT_KEY="${FEISHU_ENCRYPT_KEY:-}"
+    # 微信渠道: weixin.py 读 WEIXIN_ACCOUNT_ID/TOKEN
+    export WEIXIN_ACCOUNT_ID="${WEIXIN_ACCOUNT_ID:-}"
+    export WEIXIN_TOKEN="${WEIXIN_TOKEN:-}"
+
+    # 确保飞书/微信消息平台插件就位 (配置了才安装)
+    setup_plugins
+
+    cd "${DATA_DIR}"
+    nohup "${HERMES_BIN}" gateway run >> "${LOG}" 2>&1 &
+    echo $! > "${PID_FILE}"
+    log "gateway started (pid $(cat "${PID_FILE}"))"
+
+    # 健康检查轮询
+    for i in $(seq 1 40); do
+        if curl -sf -m3 -H "Authorization: Bearer ${API_SERVER_KEY}" "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+            log "core ready on :${PORT} after ${i}s"
+            start_status_server
+            start_dashboard
+            return 0
+        fi
+        sleep 1
+    done
+    log "core start timeout on :${PORT}"
+    return 1
+}
+
+start_dashboard() {
+    # 启动 Hermes 原生 dashboard (:9119) 作为自包含 Web UI 前端（替代废弃的 HermesWebUI）
+    [ "${DASHBOARD_ENABLED:-true}" = "true" ] || { log "dashboard disabled (DASHBOARD_ENABLED!=true)"; return 0; }
+    [ -x "${VENV}/bin/hermes" ] || { log "dashboard: hermes not found"; return 0; }
+    if [ -f "${DASHBOARD_PID}" ] && kill -0 "$(cat "${DASHBOARD_PID}")" 2>/dev/null; then
+        return 0
+    fi
+    # 未配置密码则生成随机密码并持久化到 gateway.env (避免每次重启密码变化), 并提示
+    if [ -z "${DASHBOARD_PASSWORD:-}" ]; then
+        DASHBOARD_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
+        if ! grep -q "^DASHBOARD_PASSWORD=" "${CONFIG_FILE}" 2>/dev/null; then
+            echo "DASHBOARD_PASSWORD=\"${DASHBOARD_PASSWORD}\"" >> "${CONFIG_FILE}"
+        else
+            sed -i "s|^DASHBOARD_PASSWORD=.*|DASHBOARD_PASSWORD=\"${DASHBOARD_PASSWORD}\"|" "${CONFIG_FILE}"
+        fi
+        log "dashboard: generated random password, persisted to ${CONFIG_FILE} (set DASHBOARD_PASSWORD to control)"
+    fi
+    export HERMES_HOME
+    nohup "${VENV}/bin/hermes" dashboard --port "${DASHBOARD_PORT}" --host 0.0.0.0 --skip-build --no-open >> "${DASHBOARD_LOG}" 2>&1 &
+    echo $! > "${DASHBOARD_PID}"
+    log "dashboard started (pid $(cat "${DASHBOARD_PID}")) :${DASHBOARD_PORT} user=${DASHBOARD_USER}"
+    sleep 2
+}
+
+start_status_server() {
+    # 启动状态页服务 (:8648 + 官方统一网关 Unix socket), 供手机 App/浏览器/终端访问
+    [ -f "${STATUS_SRC}" ] || { log "status_server.py not found (${STATUS_SRC})"; return 0; }
+    if [ -f "${STATUS_PID}" ] && kill -0 "$(cat "${STATUS_PID}")" 2>/dev/null; then
+        return 0
+    fi
+    # 状态服务用 Hermes venv python (提供 hermes_cli.pty_bridge / ptyprocess, 终端功能需要)
+    PY="${VENV}/bin/python"
+    [ -x "${PY}" ] || PY=/usr/bin/python3
+    # 官方统一网关 Unix socket (gatewaySocket 路径, 相对 APP_DIR)
+    RUN_DIR="${APP_DIR}/run"
+    mkdir -p "${RUN_DIR}" 2>/dev/null
+    STATUS_SOCK="${STATUS_SOCK:-${RUN_DIR}/hermes-core.sock}"
+    # hermes 可执行 (PTY 终端 spawn hermes chat 用)
+    HERMES_BIN="${HERMES_BIN:-${VENV}/bin/hermes}"
+    STATUS_PORT="${STATUS_PORT}" CORE_PORT="${PORT}" CORE_API_KEY="${API_SERVER_KEY}" \
+      CORE_CONFIG="${CONFIG_FILE}" CORE_CMD="${CMD_DIR}/main" \
+      STATUS_SOCK="${STATUS_SOCK}" HERMES_BIN="${HERMES_BIN}" HERMES_HOME="${HERMES_HOME}" \
+      nohup "${PY}" "${STATUS_SRC}" >> "${STATUS_LOG}" 2>&1 &
+    echo $! > "${STATUS_PID}"
+    log "status server started (pid $(cat "${STATUS_PID}")) :${STATUS_PORT} sock=${STATUS_SOCK}"
+    sleep 1
+}
+
+write_env() {
+    {
+        echo "ROUTER_API_KEY=${ROUTER_API_KEY:-}"
+        echo "LLM_BASE_URL=${LLM_BASE_URL:-}"
+        echo "LLM_API_KEY=${LLM_API_KEY:-}"
+        [ -n "${EXTRA_ENV:-}" ] && echo "${EXTRA_ENV}"
+    } > "${HERMES_HOME}/.env"
+}
+
+write_config() {
+    # 完整 config.yaml — 默认模型 + 多个供应商 (9Router/DeepSeek/MiMo/LongCat)
+    # model.default = 安装向导填的默认模型名 (LLM_MODEL)
+    # 供应商预设: 9Router 始终提供 (本地代理, 非强制默认); 其余按 API key 是否配置加入
+    # 保留旧 config.yaml 中非内核管理的段落 (platforms 等消息网关配置), 避免覆盖丢失
+    # model.default = 安装向导填的默认模型名 (LLM_MODEL) + base_url
+    # 若都为空则保持通用结构 (model.default: default), 不强制具体模型
+    # 供应商预设: 9Router 始终提供 (本地代理, 非强制默认); 其余按 API key 是否配置加入
+    # 保留旧 config.yaml 中非内核管理的段落 (platforms 等消息网关配置), 避免覆盖丢失
+    if [ -n "${LLM_MODEL:-}" ]; then
+        DEFAULT_MODEL="${LLM_MODEL}"
+        DEFAULT_BASE_URL="${LLM_BASE_URL:-}"
+    else
+        # 通用结构: 不指定具体模型/地址, 由 Hermes 处理
+        DEFAULT_MODEL="default"
+        DEFAULT_BASE_URL=""
+    fi
+    # 默认 provider: 检测默认模型属于哪个已配置供应商
+    DEFAULT_PROVIDER=""
+    if [ -n "${ROUTER_API_KEY:-}" ] && [[ "${DEFAULT_MODEL}" == *"/"* ]]; then
+        # 默认模型带斜杠(如 cbcn/deepseek-v4-flash) 视为 9Router 路由模型
+        DEFAULT_PROVIDER="9Router Proxy"
+    fi
+    cat > "${HERMES_HOME}/config.yaml" <<EOF
+model:
+  default: ${DEFAULT_MODEL}
+  provider: ${DEFAULT_PROVIDER}
+  base_url: ${DEFAULT_BASE_URL}
+custom_providers:
+  - name: 9Router Proxy
+    base_url: http://127.0.0.1:20128/v1
+    api_key: ${ROUTER_API_KEY:-}
+    model: cbcn/deepseek-v4-flash
+    models:
+      - cbcn/deepseek-v4-flash
+      - cbcn/minimax-m3
+      - ds/deepseek-v4-flash
+      - mimo/mimo-v2.5
+      - nvidia/z-ai/glm-5.2
+      - oc/mimo-v2.5-free
+      - oc/deepseek-v4-flash-free
+EOF
+    # 追加配置了 key 的其他供应商 (DeepSeek/MiMo/LongCat)
+    if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+        cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  - name: DeepSeek
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+    models:
+      - deepseek-chat
+      - deepseek-reasoner
+EOF
+    fi
+    if [ -n "${XIAOMI_API_KEY:-}" ]; then
+        cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  - name: Xiaomi MiMo
+    base_url: https://api.xiaomimimo.com/v1
+    api_key: ${XIAOMI_API_KEY}
+    models:
+      - mimo/mimo-v2.5
+EOF
+    fi
+    if [ -n "${LLM_API_KEY:-}" ]; then
+        cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  - name: Custom LLM
+    base_url: ${LLM_BASE_URL:-https://api.longcat.chat/openai}
+    api_key: ${LLM_API_KEY}
+    models:
+      - ${LLM_MODEL:-LongCat-2.0}
+EOF
+    fi
+    cat >> "${HERMES_HOME}/config.yaml" <<EOF
+toolsets:
+  - hermes-cli
+agent:
+  max_turns: 50
+approvals:
+  mode: manual
+api_server:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8642
+EOF
+    # 追加 dashboard.basic_auth (如配置了 DASHBOARD_USER/PASSWORD)
+    if [ -n "${DASHBOARD_USER:-}" ] && [ -n "${DASHBOARD_PASSWORD:-}" ]; then
+        cat >> "${HERMES_HOME}/config.yaml" <<EOF
+dashboard:
+  basic_auth:
+    username: "${DASHBOARD_USER}"
+    password: "${DASHBOARD_PASSWORD}"
+    session_ttl_seconds: 43200
+EOF
+        log "dashboard.basic_auth configured (user=${DASHBOARD_USER})"
+    fi
+    # 保留已有 config.yaml 中 cmd/main 未管理的段落 (如 platforms 消息网关/自定义配置),
+    # 避免每次启动覆盖丢失飞书等平台配置。
+    # 方法: 覆盖前先把旧 config.yaml 里的 platforms 段存起来, 写完后追加回去。
+    if [ -n "${OLD_PLATFORMS:-}" ]; then
+        printf '%s' "${OLD_PLATFORMS}" >> "${HERMES_HOME}/config.yaml"
+        log "preserved platforms section from previous config.yaml"
+    fi
+}
+
+stop() {
+    # 0) 停 dashboard
+    if [ -f "${DASHBOARD_PID}" ]; then
+        DPID=$(cat "${DASHBOARD_PID}")
+        kill "${DPID}" 2>/dev/null || true
+        sleep 1
+        kill -9 "${DPID}" 2>/dev/null || true
+        rm -f "${DASHBOARD_PID}"
+        log "dashboard stopped (pid ${DPID})"
+    fi
+    pkill -f "hermes dashboard --port ${DASHBOARD_PORT}" 2>/dev/null || true
+    # 1) 停状态服务
+    if [ -f "${STATUS_PID}" ]; then
+        SPID=$(cat "${STATUS_PID}")
+        kill "${SPID}" 2>/dev/null || true
+        sleep 1
+        kill -9 "${SPID}" 2>/dev/null || true
+        rm -f "${STATUS_PID}"
+    fi
+    pkill -f "status_server.py" 2>/dev/null || true
+    # 2) 停 PID 文件记录的进程
+    if [ -f "${PID_FILE}" ]; then
+        PID=$(cat "${PID_FILE}")
+        kill "${PID}" 2>/dev/null || true
+        for i in 1 2 3; do
+            kill -0 "${PID}" 2>/dev/null || { rm -f "${PID_FILE}"; log "stopped (pid ${PID})"; return 0; }
+            sleep 1
+        done
+        kill -9 "${PID}" 2>/dev/null || true
+        rm -f "${PID_FILE}"
+        log "force stopped (pid ${PID})"
+    fi
+    # 3) 兜底: 匹配本内核的实际进程 cmdline (防止孤儿进程占端口)
+    pkill -f "${VENV}/bin/hermes gateway run" 2>/dev/null || true
+    pkill -f "hermes gateway run" 2>/dev/null || true
+    # 兼容旧版/不同启动方式: python -m hermes_cli.main gateway run (cmdline 不含 "hermes gateway run" 连写, 会漏掉)
+    pkill -f "hermes_cli.main gateway run" 2>/dev/null || true
+    log "stop complete"
+}
+
+status() {
+    if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+        echo "running (pid $(cat "${PID_FILE}"))"
+        return 0
+    fi
+    if curl -sf -m3 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+        echo "running (port ${PORT})"
+        return 0
+    fi
+    echo "stopped"
+    return 1
+}
+
+case "${1:-start}" in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    restart) stop; sleep 2; start ;;
+    *) echo "Usage: $0 {start|stop|status|restart}"; exit 1 ;;
+esac

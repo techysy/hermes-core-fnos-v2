@@ -1,0 +1,13 @@
+# 构建产物（fpk / 离线 venv 包，在 NAS/构建机生成，不入库）
+app/venv.tar.gz
+*.fpk
+.build/
+HermesCore.fpk
+
+# 运行时数据
+*.pid
+*.log
+
+# Python
+__pycache__/
+*.pyc

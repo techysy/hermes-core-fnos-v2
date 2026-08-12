@@ -1,0 +1,88 @@
+[
+  {
+    "stepTitle": "Hermes Core 内核配置",
+    "items": [
+      {
+        "type": "text",
+        "field": "wizard_api_server_host",
+        "label": "监听地址",
+        "initValue": "0.0.0.0",
+        "rules": [{"required": true, "message": "必填"}]
+      },
+      {
+        "type": "text",
+        "field": "wizard_api_server_port",
+        "label": "API 端口",
+        "initValue": "8642",
+        "rules": [{"required": true, "message": "必填"}]
+      },
+      {
+        "type": "text",
+        "field": "wizard_api_server_key",
+        "label": "API Key",
+        "initValue": "webui-gateway-key-2026"
+      }
+    ]
+  },
+  {
+    "stepTitle": "默认模型",
+    "items": [
+      {
+        "type": "select",
+        "field": "wizard_llm_provider",
+        "label": "模型供应商",
+        "initValue": "9router",
+        "options": [
+          {"label": "9Router（本机代理）", "value": "9router"},
+          {"label": "DeepSeek", "value": "deepseek"},
+          {"label": "Xiaomi MiMo", "value": "mimo"},
+          {"label": "自定义 URL", "value": "custom"}
+        ]
+      },
+      {
+        "type": "password",
+        "field": "wizard_llm_api_key",
+        "label": "API Token",
+        "initValue": "",
+        "tip": "所选供应商的 API Key。9Router 本机代理可留空或填本机 key（本地代理可关闭密钥认证）。"
+      },
+      {
+        "type": "text",
+        "field": "wizard_llm_base_url",
+        "label": "Base URL（选自定义时必填）",
+        "initValue": "http://127.0.0.1:20128/v1",
+        "tip": "仅当供应商选择「自定义 URL」时填写 OpenAI 兼容 API 地址，如 https://api.example.com/v1。"
+      },
+      {
+        "type": "text",
+        "field": "wizard_llm_model",
+        "label": "默认模型名（可选）",
+        "initValue": "oc/mimo-v2.5-free",
+        "tip": "留空则使用供应商默认模型，安装后可在应用内「供应商」页调整。"
+      },
+      {
+        "type": "tips",
+        "helpText": "其余模型供应商可在应用内「供应商」页补充配置。"
+      }
+    ]
+  },
+  {
+    "stepTitle": "Dashboard 登录（内置 Web UI）",
+    "items": [
+      {
+        "type": "text",
+        "field": "wizard_dashboard_user",
+        "label": "用户名",
+        "initValue": "admin",
+        "tip": "内置 Web UI（:9119）的登录用户名，默认 admin。"
+      },
+      {
+        "type": "password",
+        "field": "wizard_dashboard_password",
+        "label": "密码（留空自动生成随机密码）",
+        "initValue": "",
+        "tip": "内置 Web UI 的登录密码。留空则安装后自动生成随机强密码，会写入 gateway.env。"
+      }
+    ]
+  }
+]

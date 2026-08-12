@@ -1,0 +1,161 @@
+#!/bin/bash
+# install_callback — 安装 hermes-agent 内核
+# 支持两种模式:
+#   A) 在线: 建 venv + pip install hermes-agent (fpk 小, 需联网 1-2 分钟)
+#   B) 离线: 解压预打包的 app/venv.tar.gz (fpk 大 ~150MB, 秒装, 无需联网)
+# 失败时记录日志但不阻断安装, cmd/main 会做 hybrid 检测并提示。
+set -uo pipefail
+
+APP_NAME="${TRIM_APPNAME:-HermesCore}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
+DATA_DIR="${TRIM_PKGVAR:-/vol4/@appdata/${APP_NAME}}"
+VENV="${DATA_DIR}/venv"
+LOG="${DATA_DIR}/install.log"
+OFFLINE_VENV="${APP_DIR}/venv.tar.gz"   # B 方案离线包
+
+mkdir -p "${DATA_DIR}"
+echo "[$(date '+%F %T')] install_callback start (user=$(id -un) uid=$(id -u))" >> "${LOG}"
+
+# ── 初始化 Hermes Home (安装时提前创建, 避免启动时才建导致的权限/时序问题) ──
+init_hermes_home() {
+    local HOME_DIR="${DATA_DIR}/hermes_home"
+    mkdir -p "${HOME_DIR}" 2>/dev/null
+    # 基础 .env (若不存在)
+    if [ ! -f "${HOME_DIR}/.env" ]; then
+        {
+            echo "ROUTER_API_KEY=${ROUTER_API_KEY:-}"
+            echo "LLM_BASE_URL=${LLM_BASE_URL:-}"
+            echo "LLM_API_KEY=${LLM_API_KEY:-}"
+        } > "${HOME_DIR}/.env" 2>/dev/null
+    fi
+    # 初始 config.yaml (若不存在; 完整配置由 cmd/main 启动时按 gateway.env 生成)
+    if [ ! -f "${HOME_DIR}/config.yaml" ]; then
+        cat > "${HOME_DIR}/config.yaml" <<'EOF' 2>/dev/null
+model:
+  default: default
+  provider: ""
+custom_providers: []
+api_server:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8642
+EOF
+    fi
+    echo "[$(date '+%F %T')] hermes_home initialized at ${HOME_DIR}" >> "${LOG}"
+}
+
+# 保存安装向导传入的配置 (wizard_ 前缀) 到 gateway.env
+# 字段: api_server_*, llm_provider (模型供应商 select), llm_api_key (供应商 token),
+#       llm_base_url (自定义时必填), llm_model (默认模型名, 可选)
+# 供应商→环境变量/默认 base_url/默认模型 映射 (与 status_server.py MODEL_PROVIDERS 保持一致)
+WIZ_PROVIDER="${wizard_llm_provider:-9router}"
+case "${WIZ_PROVIDER}" in
+  deepseek)
+    WIZ_KEY_ENV="DEEPSEEK_API_KEY"
+    WIZ_BASE_URL="https://api.deepseek.com/v1"
+    WIZ_DEF_MODEL="deepseek-chat"
+    ;;
+  mimo)
+    WIZ_KEY_ENV="XIAOMI_API_KEY"
+    WIZ_BASE_URL="https://api.xiaomimimo.com/v1"
+    WIZ_DEF_MODEL="mimo-v2.5"
+    ;;
+  custom)
+    # 自定义 OpenAI 兼容 API: 用向导填的 base_url, token 走通用 LLM_API_KEY
+    WIZ_KEY_ENV="LLM_API_KEY"
+    WIZ_BASE_URL="${wizard_llm_base_url:-}"
+    WIZ_DEF_MODEL=""
+    ;;
+  *)
+    # 默认 9router (本机代理)
+    WIZ_PROVIDER="9router"
+    WIZ_KEY_ENV="ROUTER_API_KEY"
+    WIZ_BASE_URL="http://127.0.0.1:20128/v1"
+    WIZ_DEF_MODEL=""
+    ;;
+esac
+WIZ_MODEL="${wizard_llm_model:-${WIZ_DEF_MODEL}}"
+WIZ_API_KEY="${wizard_llm_api_key:-}"
+
+# 注意: 更新时(升级)也走 install_callback, 但向导为空. 为避免覆盖已有配置,
+# 仅当 gateway.env 不存在(首次安装) 或向导显式传了关键配置时才写入。
+if [ ! -f "${DATA_DIR}/gateway.env" ]; then
+    # 首次安装: 写入向导配置
+    cat > "${DATA_DIR}/gateway.env" <<EOF
+API_SERVER_HOST="${wizard_api_server_host:-0.0.0.0}"
+API_SERVER_PORT="${wizard_api_server_port:-8642}"
+API_SERVER_KEY="${wizard_api_server_key:-webui-gateway-key-2026}"
+LLM_MODEL="${WIZ_MODEL}"
+LLM_BASE_URL="${WIZ_BASE_URL}"
+${WIZ_KEY_ENV}="${WIZ_API_KEY}"
+DASHBOARD_USER="${wizard_dashboard_user:-admin}"
+DASHBOARD_PASSWORD="${wizard_dashboard_password:-}"
+EOF
+    chmod 600 "${DATA_DIR}/gateway.env"
+    echo "[$(date '+%F %T')] saved wizard config (first install, provider=${WIZ_PROVIDER})" >> "${LOG}"
+elif [ -n "${wizard_llm_provider:-}${wizard_llm_api_key:-}${wizard_llm_base_url:-}${wizard_api_server_key:-}" ]; then
+    # 更新场景: 向导显式传了供应商/token/内核 key 才更新, 避免清空已有配置
+    cat > "${DATA_DIR}/gateway.env" <<EOF
+API_SERVER_HOST="${wizard_api_server_host:-0.0.0.0}"
+API_SERVER_PORT="${wizard_api_server_port:-8642}"
+API_SERVER_KEY="${wizard_api_server_key:-webui-gateway-key-2026}"
+LLM_MODEL="${WIZ_MODEL}"
+LLM_BASE_URL="${WIZ_BASE_URL}"
+${WIZ_KEY_ENV}="${WIZ_API_KEY}"
+DASHBOARD_USER="${wizard_dashboard_user:-admin}"
+DASHBOARD_PASSWORD="${wizard_dashboard_password:-}"
+EOF
+    chmod 600 "${DATA_DIR}/gateway.env"
+    echo "[$(date '+%F %T')] saved wizard config (wizard had values, provider=${WIZ_PROVIDER})" >> "${LOG}"
+else
+    echo "[$(date '+%F %T')] upgrade: wizard empty, preserving existing gateway.env" >> "${LOG}"
+fi
+
+# 已安装则跳过
+if [ -x "${VENV}/bin/hermes" ]; then
+    echo "[$(date '+%F %T')] hermes already installed, skip" >> "${LOG}"
+    init_hermes_home
+    exit 0
+fi
+
+# 优先离线包 (B 方案) — 秒装, 不依赖网络
+if [ -f "${OFFLINE_VENV}" ]; then
+    echo "[$(date '+%F %T')] offline mode: extracting bundled venv..." >> "${LOG}"
+    tar xzf "${OFFLINE_VENV}" -C "${DATA_DIR}" >> "${LOG}" 2>&1
+    if [ -x "${VENV}/bin/hermes" ]; then
+        echo "[$(date '+%F %T')] offline venv installed: $("${VENV}"/bin/hermes --version 2>&1 | head -1)" >> "${LOG}"
+        exit 0
+    else
+        echo "[$(date '+%F %T')] offline venv extract failed, falling back to online" >> "${LOG}"
+        rm -rf "${VENV}" 2>/dev/null
+    fi
+fi
+
+# 在线模式 (A 方案)
+echo "[$(date '+%F %T')] online mode: creating venv at ${VENV}" >> "${LOG}"
+PY=/usr/bin/python3
+[ -x /vol4/@appcenter/python312/bin/python3.12 ] && PY=/vol4/@appcenter/python312/bin/python3.12
+
+"${PY}" -m venv "${VENV}" >> "${LOG}" 2>&1
+if [ ! -x "${VENV}/bin/pip" ]; then
+    echo "[$(date '+%F %T')] ERROR: venv creation failed" >> "${LOG}"
+    exit 0
+fi
+
+"${VENV}/bin/pip" install --quiet pyyaml cryptography aiohttp >> "${LOG}" 2>&1 || true
+
+echo "[$(date '+%F %T')] installing hermes-agent (may take 1-2 min)..." >> "${LOG}"
+if "${VENV}/bin/pip" install --quiet hermes-agent >> "${LOG}" 2>&1; then
+    echo "[$(date '+%F %T')] hermes-agent installed: $("${VENV}"/bin/hermes --version 2>&1 | head -1)" >> "${LOG}"
+else
+    echo "[$(date '+%F %T')] direct install failed, trying proxy..." >> "${LOG}"
+    if "${VENV}/bin/pip" install --quiet --proxy http://127.0.0.1:7890 hermes-agent >> "${LOG}" 2>&1; then
+        echo "[$(date '+%F %T')] hermes-agent installed via proxy" >> "${LOG}"
+    else
+        echo "[$(date '+%F %T')] ERROR: hermes-agent install failed (check network). cmd/main will report." >> "${LOG}"
+    fi
+fi
+
+echo "[$(date '+%F %T')] install_callback done" >> "${LOG}"
+init_hermes_home
+exit 0
