@@ -297,7 +297,8 @@ api_server:
   host: "0.0.0.0"
   port: 8642
 EOF
-    # 追加 dashboard.basic_auth (如配置了 DASHBOARD_USER/PASSWORD)
+    # 追加 dashboard.basic_auth + 启用 basic_auth 插件 (如配置了 DASHBOARD_USER/PASSWORD)
+    # v0.20.0: 插件 opt-in，必须列在 plugins.enabled 才会加载，否则 dashboard 无法绑定 0.0.0.0
     if [ -n "${DASHBOARD_USER:-}" ] && [ -n "${DASHBOARD_PASSWORD:-}" ]; then
         cat >> "${HERMES_HOME}/config.yaml" <<EOF
 dashboard:
@@ -305,8 +306,11 @@ dashboard:
     username: "${DASHBOARD_USER}"
     password: "${DASHBOARD_PASSWORD}"
     session_ttl_seconds: 43200
+plugins:
+  enabled:
+    - dashboard_auth/basic
 EOF
-        log "dashboard.basic_auth configured (user=${DASHBOARD_USER})"
+        log "dashboard.basic_auth configured (user=${DASHBOARD_USER}) + dashboard_auth/basic plugin enabled"
     fi
     # 保留已有 config.yaml 中 cmd/main 未管理的段落 (如 platforms 消息网关/自定义配置),
     # 避免每次启动覆盖丢失飞书等平台配置。
