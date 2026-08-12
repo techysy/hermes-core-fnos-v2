@@ -33,7 +33,7 @@ if [ "$MODE" = "--formal" ]; then
     echo "ℹ️  正式版：$CUR_VER -> $VER"
 else
     # 测试版：第4位自动累加
-    if [[ "$CUR_VER" =~ ^([0-9]+)\\.([0-9]+)\\.([0-9]+)\\.([0-9]+)$ ]]; then
+    if [[ "$CUR_VER" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
         VER="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.$((BASH_REMATCH[4] + 1))"
     else
         VER="${CUR_VER}.1"
