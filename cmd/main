@@ -117,6 +117,12 @@ start() {
     write_config
 
     export HERMES_HOME
+    # Node.js runtime (TUI/Chat 需要) — fnOS nodejs_v24 依赖，优先用其 node
+    # hermes 通过 find_node_executable 从 PATH 或 HERMES_HOME/node 找 node
+    if [ -x /var/apps/nodejs_v24/target/bin/node ]; then
+        export PATH="/var/apps/nodejs_v24/target/bin:$PATH"
+        log "node runtime: /var/apps/nodejs_v24/target/bin ($(/var/apps/nodejs_v24/target/bin/node --version 2>&1))"
+    fi
     # API Server 平台配置 (WebUI 等前端连接的 Gateway 端点)
     export API_SERVER_ENABLED=true
     export API_SERVER_HOST="${API_SERVER_HOST:-0.0.0.0}"
