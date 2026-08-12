@@ -81,10 +81,29 @@ else
     fi
 fi
 
-echo "=== 4/5 打包 venv.tar.gz ==="
+echo "=== 4/5 补全 bundled 资源 (wheel 缺失的 plugin.yaml/locales/skills 等) ==="
+# wheel 构建不含 plugins/*/plugin.yaml、locales、skills 等非 .py 资源
+# （pyproject package-data 只含 gateway assets）。从源码目录补进 site-packages。
+BUNDLED_PLUGINS_SRC="${SRC}/plugins"
+BUNDLED_PLUGINS_DEST="${SITE_PKG}/plugins"
+if [ -d "$BUNDLED_PLUGINS_SRC" ] && [ -d "$BUNDLED_PLUGINS_DEST" ]; then
+    echo "  补全 bundled plugins (plugin.yaml)..."
+    # 复制所有 plugin.yaml（含子目录），不覆盖已有 .py
+    (cd "$BUNDLED_PLUGINS_SRC" && find . -name "plugin.yaml" -exec cp --parents {} "$BUNDLED_PLUGINS_DEST/" \; 2>/dev/null) || true
+    (cd "$BUNDLED_PLUGINS_SRC" && find . -type d -name "assets" -exec cp -r --parents {} "$BUNDLED_PLUGINS_DEST/" \; 2>/dev/null) || true
+fi
+# 补 locales / skills / optional-mcps / providers 等源码资源目录
+for SUB in locales skills optional-mcps providers; do
+    if [ -d "${SRC}/${SUB}" ] && [ -d "${SITE_PKG}/${SUB}" ]; then
+        echo "  补全 ${SUB}/..."
+        cp -r "${SRC}/${SUB}"/* "${SITE_PKG}/${SUB}/" 2>/dev/null || true
+    fi
+done
+
+echo "=== 5/5 打包 venv.tar.gz ==="
 rm -f "$VENV_TAR"
 tar czf "$VENV_TAR" -C "$BUILD_DIR" venv
 echo "  ✅ 产出: $VENV_TAR ($(du -h "$VENV_TAR" | cut -f1))"
 
-echo "=== 5/5 完成 ==="
+echo "=== 6/5 完成 ==="
 echo "下一步：把 app/venv.tar.gz 随仓库一起，在 NAS 上执行 bash scripts/build.sh 打 fpk。"
