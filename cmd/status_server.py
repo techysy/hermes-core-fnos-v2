@@ -1027,7 +1027,7 @@ function switchNav(nav) {{
   // 切到日志页时加载日志源
   if (nav === 'logs') loadLogSources();
   // 切到终端页时, 面板已可见, 重新 fit 并同步 PTY 尺寸 (修复隐藏时 fit 成 1 列导致单字符换行)
-  if (nav === 'terminal') { setTimeout(sendTermSize, 50); }
+  if (nav === 'terminal') {{ setTimeout(sendTermSize, 50); }}
   // 移动端: 切换后收起侧栏
   if (window.innerWidth <= 768) toggleSidebar(false);
 }}
@@ -1427,14 +1427,14 @@ function connectTerm() {{
   termWs.onerror = () => {{ if (st) st.textContent = '错误 (点 🔄 重连)'; }};
 }}
 // 连接后/窗口变化时同步终端尺寸 (让 PTY 匹配前端实际列数, 避免多行格式错乱)
-function sendTermSize() {
+function sendTermSize() {{
   if (!termFit || !termWs || termWs.readyState !== 1) return;
-  try {
+  try {{
     termFit.fit();
     const p = term.proposeDimensions();
     let cols = p ? p.cols : 80, rows = p ? p.rows : 24;
     // 面板隐藏/异常时 fit 会得到极小列数, 用默认 80x24 兜底, 避免 PTY 单字符换行
-    if (!cols || cols < 10 || !rows || rows < 3) { cols = 80; rows = 24; }
+    if (!cols || cols < 10 || !rows || rows < 3) {{ cols = 80; rows = 24; }}
     termWs.send(String.fromCharCode(27) + '[' + rows + ';' + cols + 'R');
   }} catch(e) {{}}
 }}
