@@ -169,8 +169,9 @@ def _handle_pty_ws(conn, sock, headers):
             pass
         return
 
-    # spawn hermes chat (Python CLI, 规避 node) via PTY
-    argv = [HERMES_BIN, "chat"]
+    # spawn 原厂 TUI (hermes --tui, Node.js ink 界面) via PTY — 与原生 CLI 体验一致
+    # 需要 node 在 PATH (cmd/main 已加入 nodejs_v24) + site-packages/ui-tui (prebuild 已补全)
+    argv = [HERMES_BIN, "--tui"]
     env = os.environ.copy()
     # 确保 HERMES_HOME 非空: 环境变量缺失时从 CORE_CONFIG(gateway.env 所在目录) 推导
     hh = os.environ.get("HERMES_HOME", "")
@@ -822,7 +823,7 @@ PAGE = """<!DOCTYPE html>
   <div class="nav-panel" id="panel-terminal" style="display:none">
   <div class="card">
     <h2>🖥️ <span data-i18n="nav-terminal">终端</span>
-      <span style="font-size:11px;color:var(--muted);font-weight:normal;" data-i18n="terminal-hint">原生 Hermes CLI (hermes chat)，体验和命令行一致</span>
+      <span style="font-size:11px;color:var(--muted);font-weight:normal;" data-i18n="terminal-hint">原生 Hermes TUI (hermes --tui)，和命令行终端体验一致</span>
     </h2>
     <div id="term-container" style="height:calc(100vh - 220px);min-height:300px;background:#1e1e1e;border-radius:8px;padding:6px;"></div>
     <p style="font-size:11px;color:var(--muted);margin:6px 0 0;">
@@ -1416,7 +1417,7 @@ function connectTerm() {{
   catch (e) {{ if (st) st.textContent = '连接失败'; return; }}
   if (st) st.textContent = '连接中...';
   termWs.binaryType = 'arraybuffer';
-  termWs.onopen = () => {{ if (st) st.textContent = '已连接 (hermes chat)'; termReady = true; term.focus(); sendTermSize(); }};
+  termWs.onopen = () => {{ if (st) st.textContent = '已连接 (hermes TUI)'; termReady = true; term.focus(); sendTermSize(); }};
   termWs.onmessage = (ev) => {{
     let data = ev.data;
     if (typeof data === 'string') data = data;
