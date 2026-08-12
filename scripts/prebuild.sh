@@ -55,6 +55,9 @@ if [ ! -x "$VENV_DIR/bin/hermes" ]; then
         echo "  wheel 安装失败，尝试从 GitHub 源码安装...";
         HERMES_NIX_BUILD=1 "$VENV_DIR/bin/pip" install "git+https://github.com/NousResearch/hermes-agent@${HERMES_TAG}" 2>&1 | tail -2;
     }
+    # 补装 gateway api_server 运行时依赖（aiohttp 不在 hermes 核心依赖，但 api_server 平台需要）
+    echo "  补装 gateway 运行时依赖 (aiohttp)..."
+    "$VENV_DIR/bin/pip" install aiohttp pyyaml cryptography 2>&1 | tail -2 || true
 fi
 "$VENV_DIR/bin/hermes" --version
 

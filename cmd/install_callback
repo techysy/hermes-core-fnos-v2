@@ -118,12 +118,39 @@ if [ -x "${VENV}/bin/hermes" ]; then
     exit 0
 fi
 
+# 修正 venv 的 shebang / pyvenv.cfg 绝对路径 → 当前部署路径
+# 离线 venv 打包时的路径与 fnOS 部署路径不同，需把 bin/* 脚本的 shebang
+# 和 pyvenv.cfg 指向 ${VENV} 的实际路径，否则 hermes 无法启动。
+fix_venv_paths() {
+    local VENV_DIR="$1"
+    local PY_BIN="${VENV_DIR}/bin/python3"
+    [ -x "$PY_BIN" ] || PY_BIN="${VENV_DIR}/bin/python"
+    # 修正 bin/ 下所有脚本的 shebang（含 python3.12 等变体）
+    for f in "${VENV_DIR}"/bin/*; do
+        [ -f "$f" ] || continue
+        # 替换 shebang 中指向旧 venv 绝对路径的部分
+        sed -i "1s|#!.*/bin/python.*|#!${PY_BIN}|" "$f" 2>/dev/null || true
+    done
+    # 修正 pyvenv.cfg（home/executable 指向）
+    if [ -f "${VENV_DIR}/pyvenv.cfg" ]; then
+        sed -i "s|^home = .*|home = $(dirname "$(dirname "$PY_BIN")")|" "${VENV_DIR}/pyvenv.cfg" 2>/dev/null || true
+    fi
+}
+
 # 优先离线包 (B 方案) — 秒装, 不依赖网络
 if [ -f "${OFFLINE_VENV}" ]; then
     echo "[$(date '+%F %T')] offline mode: extracting bundled venv..." >> "${LOG}"
     tar xzf "${OFFLINE_VENV}" -C "${DATA_DIR}" >> "${LOG}" 2>&1
     if [ -x "${VENV}/bin/hermes" ]; then
+        # 修正 venv 路径（打包路径 → 部署路径）
+        fix_venv_paths "${VENV}"
         echo "[$(date '+%F %T')] offline venv installed: $("${VENV}"/bin/hermes --version 2>&1 | head -1)" >> "${LOG}"
+        # 兜底：确保 gateway api_server 运行时依赖已装（aiohttp 不在 hermes 核心依赖）
+        if ! "${VENV}/bin/python" -c "import aiohttp" >/dev/null 2>&1; then
+            echo "[$(date '+%F %T')] aiohttp missing, installing..." >> "${LOG}"
+            "${VENV}/bin/pip" install --quiet aiohttp pyyaml cryptography >> "${LOG}" 2>&1 \
+                || "${VENV}/bin/pip" install --quiet --proxy http://127.0.0.1:7890 aiohttp pyyaml cryptography >> "${LOG}" 2>&1 || true
+        fi
         exit 0
     else
         echo "[$(date '+%F %T')] offline venv extract failed, falling back to online" >> "${LOG}"
