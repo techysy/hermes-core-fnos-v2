@@ -144,15 +144,23 @@ fi
 
 "${VENV}/bin/pip" install --quiet pyyaml cryptography aiohttp >> "${LOG}" 2>&1 || true
 
-echo "[$(date '+%F %T')] installing hermes-agent (may take 1-2 min)..." >> "${LOG}"
-if "${VENV}/bin/pip" install --quiet hermes-agent >> "${LOG}" 2>&1; then
-    echo "[$(date '+%F %T')] hermes-agent installed: $("${VENV}"/bin/hermes --version 2>&1 | head -1)" >> "${LOG}"
+echo "[$(date '+%F %T')] installing hermes-agent v0.20.0 (may take 1-2 min)..."
+# v2: 内核来源改为 GitHub v0.20.0 源码（PyPI 未同步）；失败则回退 PyPI（v0.19.0）
+HERMES_TAG="v2026.8.3"
+HERMES_GIT="git+https://github.com/NousResearch/hermes-agent@${HERMES_TAG}"
+if "${VENV}/bin/pip" install --quiet "${HERMES_GIT}" >> "${LOG}" 2>&1; then
+    echo "[$(date '+%F %T')] hermes-agent installed from GitHub: $("${VENV}"/bin/hermes --version 2>&1 | head -1)"
 else
-    echo "[$(date '+%F %T')] direct install failed, trying proxy..." >> "${LOG}"
-    if "${VENV}/bin/pip" install --quiet --proxy http://127.0.0.1:7890 hermes-agent >> "${LOG}" 2>&1; then
-        echo "[$(date '+%F %T')] hermes-agent installed via proxy" >> "${LOG}"
+    echo "[$(date '+%F %T')] GitHub install failed, trying proxy..."
+    if "${VENV}/bin/pip" install --quiet --proxy http://127.0.0.1:7890 "${HERMES_GIT}" >> "${LOG}" 2>&1; then
+        echo "[$(date '+%F %T')] hermes-agent installed via proxy (GitHub)"
     else
-        echo "[$(date '+%F %T')] ERROR: hermes-agent install failed (check network). cmd/main will report." >> "${LOG}"
+        echo "[$(date '+%F %T')] GitHub install failed, falling back to PyPI hermes-agent..."
+        if "${VENV}/bin/pip" install --quiet --proxy http://127.0.0.1:7890 hermes-agent >> "${LOG}" 2>&1; then
+            echo "[$(date '+%F %T')] hermes-agent installed via proxy (PyPI fallback)"
+        else
+            echo "[$(date '+%F %T')] ERROR: hermes-agent install failed (check network). cmd/main will report."
+        fi
     fi
 fi
 
