@@ -56,14 +56,23 @@ fi
 "$VENV_DIR/bin/hermes" --version
 
 echo "=== 3/5 复用/准备前端 web_dist ==="
-WEB_DIST_DEST="$VENV_DIR/lib/python3."*/site-packages/hermes_cli/web_dist"
+# 用 python 定位 site-packages 路径（可靠处理 glob）
+SITE_PKG="$("$VENV_DIR/bin/python" -c 'import site,sys; print(site.getsitepackages()[0])')"
+WEB_DIST_DEST="${SITE_PKG}/hermes_cli/web_dist"
+echo "  web_dist 目标: ${WEB_DIST_DEST}"
+mkdir -p "${WEB_DIST_DEST}"
 # 优先复用本机现成 web_dist
 if [ -d "$WEB_DIST_SRC" ] && [ -f "$WEB_DIST_SRC/index.html" ]; then
     echo "  复用现成 web_dist: $WEB_DIST_SRC"
-    cp -r "$WEB_DIST_SRC"/* "$WEB_DIST_DEST/" 2>/dev/null || true
+    cp -r "$WEB_DIST_SRC"/* "${WEB_DIST_DEST}/" 2>/dev/null || true
+    ls "${WEB_DIST_DEST}/index.html" >/dev/null 2>&1 && echo "  ✅ web_dist 已就位" || echo "  ⚠️ web_dist 复制可能不完整"
 else
     echo "  无现成 web_dist，从源码构建前端（需要 npm）..."
     (cd "$SRC" && npm install --workspace web --no-audit --no-fund 2>/dev/null; cd web && npm run build 2>/dev/null || echo "  ⚠️ npm build 失败，可能无预构建前端")
+    # 构建产物输出到 hermes_cli/web_dist，复制到 venv 内
+    if [ -d "${SRC}/hermes_cli/web_dist" ]; then
+        cp -r "${SRC}/hermes_cli/web_dist"/* "${WEB_DIST_DEST}/" 2>/dev/null || true
+    fi
 fi
 
 echo "=== 4/5 打包 venv.tar.gz ==="
