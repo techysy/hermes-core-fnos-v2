@@ -47,10 +47,13 @@ VENV_DIR="$BUILD_DIR/venv"
 if [ ! -x "$VENV_DIR/bin/hermes" ]; then
     "$PY" -m venv "$VENV_DIR"
     "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
-    # 从源码安装 v0.20.0（PyPI 未同步，需源码）
-    "$VENV_DIR/bin/pip" install "$SRC" || {
-        echo "  源码安装失败，尝试 editable 安装...";
-        "$VENV_DIR/bin/pip" install -e "$SRC";
+    # v0.20.0 官方禁止非 editable 构建 wheel，需设 HERMES_NIX_BUILD=1 绕过 guard，
+    # 构建 wheel 后安装（非 editable，避免路径依赖，可移植到 fnOS）
+    echo "  构建 hermes v0.20.0 wheel 并安装..."
+    (cd "$SRC" && HERMES_NIX_BUILD=1 "$VENV_DIR/bin/pip" wheel . --no-deps -w "$BUILD_DIR/wheels" >/dev/null 2>&1)
+    "$VENV_DIR/bin/pip" install "$BUILD_DIR"/wheels/hermes_agent-*.whl 2>&1 | tail -2 || {
+        echo "  wheel 安装失败，尝试从 GitHub 源码安装...";
+        HERMES_NIX_BUILD=1 "$VENV_DIR/bin/pip" install "git+https://github.com/NousResearch/hermes-agent@${HERMES_TAG}" 2>&1 | tail -2;
     }
 fi
 "$VENV_DIR/bin/hermes" --version
