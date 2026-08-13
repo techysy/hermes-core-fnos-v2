@@ -16,6 +16,7 @@
 | 0.9.9.5 | Chat/TUI (ui-tui + node) | ✅ dashboard 正常，待验证 Chat |
 | 0.9.9.6 | 状态页 8648 渲染 | ✅ 花括号修复，渲染验证通过 |
 | 0.9.9.10 | 状态页终端白屏 + dashboard Files 404 | ✅ 定位并修复（缺 xterm vendor + managed-files 根） |
+| 0.9.9.11 | 线上重装验证两修复 | ✅ vendor 资源 200 + Files 正常浏览 |
 
 ---
 

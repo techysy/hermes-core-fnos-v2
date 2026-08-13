@@ -87,7 +87,8 @@
 ---
 
 ## 待办 / TODO
-- [ ] 空壳反向代理 + dashboard 认证方案，在 101 重装验证
-- [ ] dashboard Chat 实际验证（tui_dist 已补，待重装确认）
+- [x] dashboard 认证方案，在 101 重装验证（0.9.9.11 登录 admin 正常）
+- [x] dashboard Chat / 状态页终端，在 101 重装验证（xterm vendor 已就位）
+- [x] dashboard Files 404 修复，线上验证通过（0.9.9.11）
 - [ ] 空壳 app 桌面图标最终确认指向 :9118（反向代理）
 - [ ] 测试通过后 `--formal` 发布 1.0.0
