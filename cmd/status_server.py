@@ -837,7 +837,7 @@ PAGE = """<!DOCTYPE html>
   <div class="nav-panel" id="panel-terminal" style="display:none">
   <div class="card">
     <h2>🖥️ <span data-i18n="nav-terminal">终端</span>
-      <span style="font-size:11px;color:var(--muted);font-weight:normal;" data-i18n="terminal-hint">容器内终端 (shell)，退出 TUI 即可使用</span>
+      <span style="font-size:11px;color:var(--muted);font-weight:normal;" data-i18n="terminal-hint">容器内终端 (shell)，可直接运行 hermes / 系统命令</span>
     </h2>
     <div id="term-container" style="height:calc(100vh - 220px);min-height:300px;background:#1e1e1e;border-radius:8px;padding:6px;"></div>
     <p style="font-size:11px;color:var(--muted);margin:6px 0 0;">
@@ -860,7 +860,7 @@ PAGE = """<!DOCTYPE html>
       <button class="mini-btn" onclick="downloadLog()">⬇️ <span data-i18n="download">下载</span></button>
       <span id="log-status" style="font-size:11px;color:var(--muted);"></span>
     </div>
-    <pre id="log-view" style="background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:8px;height:calc(100vh - 280px);min-height:280px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;"></pre>
+    <pre id="log-view" style="background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:8px;height:calc(100vh - 220px);min-height:300px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;"></pre>
   </div>
   </div>
 

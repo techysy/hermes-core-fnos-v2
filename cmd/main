@@ -117,7 +117,8 @@ start() {
     write_config
 
     export HERMES_HOME
-    # Node.js runtime (TUI/Chat 需要) — fnOS nodejs_v24 依赖，优先用其 node
+    # Node.js runtime (仅 dashboard Chat 的 hermes --tui 需要) — fnOS nodejs_v24 依赖，优先用其 node
+    # 状态页终端已是容器 shell, 不依赖 node; 此 node 仅供 dashboard Chat 用
     # hermes 通过 find_node_executable 从 PATH 或 HERMES_HOME/node 找 node
     if [ -x /var/apps/nodejs_v24/target/bin/node ]; then
         export PATH="/var/apps/nodejs_v24/target/bin:$PATH"
