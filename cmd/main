@@ -205,7 +205,7 @@ start_status_server() {
     RUN_DIR="${APP_DIR}/run"
     mkdir -p "${RUN_DIR}" 2>/dev/null
     STATUS_SOCK="${STATUS_SOCK:-${RUN_DIR}/hermes-core.sock}"
-    # hermes 可执行 (PTY 终端 spawn hermes chat 用)
+    # hermes 可执行 (容器终端把其目录加入 PATH, 方便运行 hermes model/init 等命令)
     HERMES_BIN="${HERMES_BIN:-${VENV}/bin/hermes}"
     STATUS_PORT="${STATUS_PORT}" CORE_PORT="${PORT}" CORE_API_KEY="${API_SERVER_KEY}" \
       CORE_CONFIG="${CONFIG_FILE}" CORE_CMD="${CMD_DIR}/main" \

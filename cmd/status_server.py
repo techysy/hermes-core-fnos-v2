@@ -37,7 +37,8 @@ CONFIG_FILE = os.environ.get("CORE_CONFIG", "")
 CMD_MAIN = os.environ.get("CORE_CMD", "")
 # 官方统一网关: Unix socket (gatewaySocket 文件名, 放 ${TRIM_APPDEST}/target/)
 SOCK_PATH = os.environ.get("STATUS_SOCK", "")  # 空 = 不监听 Unix socket
-HERMES_BIN = os.environ.get("HERMES_BIN", "")  # hermes 可执行 (PTY 终端 spawn 用)
+# hermes 可执行 (容器终端里把其目录加入 PATH, 方便运行 hermes model/init 等命令)
+HERMES_BIN = os.environ.get("HERMES_BIN", "")
 
 # ── 本地静态资源 (xterm.js 等, 避免 CDN 依赖) ─────────────────────────────
 # status_server.py 所在目录 (cmd/), vendor 资源放 cmd/vendor/
@@ -155,10 +156,18 @@ def _ws_read_frame(sock):
     return (opcode, payload)
 
 
+def find_shell():
+    """定位容器内可用的 shell (bash 优先, 回退 sh)."""
+    for cand in ("/bin/bash", "/usr/bin/bash", "/bin/sh"):
+        if os.path.exists(cand) and os.access(cand, os.X_OK):
+            return cand
+    return "sh"
+
+
 def _handle_pty_ws(conn, sock, headers):
     """PTY 终端 WebSocket 主循环. conn=已握手 socket, headers=网关用户 Header."""
-    print(f"[pty] _PTY_OK={_PTY_OK} HERMES_BIN={HERMES_BIN!r} HERMES_HOME={os.environ.get('HERMES_HOME','')!r}", flush=True)
-    if not _PTY_OK or not HERMES_BIN or not os.path.isfile(HERMES_BIN):
+    print(f"[pty] _PTY_OK={_PTY_OK} HERMES_HOME={os.environ.get('HERMES_HOME','')!r}", flush=True)
+    if not _PTY_OK:
         try:
             sock.sendall(_ws_encode(b"\r\n\x1b[31mTerminal unavailable: Hermes PTY not available. Enable python312 runtime.\x1b[0m\r\n"))
         except Exception:
@@ -169,11 +178,11 @@ def _handle_pty_ws(conn, sock, headers):
             pass
         return
 
-    # spawn 原厂 TUI (hermes --tui, Node.js ink 界面) via PTY — 与原生 CLI 体验一致
-    # 需要 node 在 PATH (cmd/main 已加入 nodejs_v24) + site-packages/ui-tui (prebuild 已补全)
-    argv = [HERMES_BIN, "--tui"]
+    # spawn 容器内 shell (bash, 回退 sh) via PTY — 替代废弃的 hermes --tui 终端.
+    # 终端在容器内跑普通 shell, 不再依赖 hermes/node/ui-tui, 体验更轻快.
+    argv = [find_shell()]
     env = os.environ.copy()
-    # 确保 HERMES_HOME 非空: 环境变量缺失时从 CORE_CONFIG(gateway.env 所在目录) 推导
+    # 确保工作目录 HERMES_HOME 非空: 环境变量缺失时从 CORE_CONFIG(gateway.env 所在目录) 推导
     hh = os.environ.get("HERMES_HOME", "")
     if not hh:
         _cfg_dir = os.path.dirname(CONFIG_FILE) if CONFIG_FILE else ""
@@ -185,9 +194,14 @@ def _handle_pty_ws(conn, sock, headers):
     env.setdefault("LANG", "C.UTF-8")
     env.setdefault("LC_ALL", "C.UTF-8")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # 把 hermes 可执行所在目录加入 PATH, 让用户在容器终端里直接敲 hermes model/init 等命令
+    if HERMES_BIN:
+        _bin_dir = os.path.dirname(HERMES_BIN)
+        if _bin_dir and os.path.isdir(_bin_dir):
+            env["PATH"] = _bin_dir + os.pathsep + env.get("PATH", "")
     try:
         bridge = PtyBridge.spawn(argv, cwd=hh, env=env, cols=80, rows=24)
-        print(f"[pty] spawn OK cwd={hh!r}", flush=True)
+        print(f"[pty] spawn OK shell={argv[0]!r} cwd={hh!r}", flush=True)
     except (PtyUnavailableError, OSError, FileNotFoundError) as exc:
         print(f"[pty] spawn FAILED: {exc}", flush=True)
         try:
@@ -823,7 +837,7 @@ PAGE = """<!DOCTYPE html>
   <div class="nav-panel" id="panel-terminal" style="display:none">
   <div class="card">
     <h2>🖥️ <span data-i18n="nav-terminal">终端</span>
-      <span style="font-size:11px;color:var(--muted);font-weight:normal;" data-i18n="terminal-hint">原生 Hermes TUI (hermes --tui)，和命令行终端体验一致</span>
+      <span style="font-size:11px;color:var(--muted);font-weight:normal;" data-i18n="terminal-hint">容器内终端 (shell)，退出 TUI 即可使用</span>
     </h2>
     <div id="term-container" style="height:calc(100vh - 220px);min-height:300px;background:#1e1e1e;border-radius:8px;padding:6px;"></div>
     <p style="font-size:11px;color:var(--muted);margin:6px 0 0;">
@@ -1417,7 +1431,7 @@ function connectTerm() {{
   catch (e) {{ if (st) st.textContent = '连接失败'; return; }}
   if (st) st.textContent = '连接中...';
   termWs.binaryType = 'arraybuffer';
-  termWs.onopen = () => {{ if (st) st.textContent = '已连接 (hermes TUI)'; termReady = true; term.focus(); sendTermSize(); }};
+  termWs.onopen = () => {{ if (st) st.textContent = '已连接 (容器终端)'; termReady = true; term.focus(); sendTermSize(); }};
   termWs.onmessage = (ev) => {{
     let data = ev.data;
     if (typeof data === 'string') data = data;

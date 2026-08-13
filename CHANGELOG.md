@@ -84,6 +84,12 @@
   - **修复**：cmd/main 启动 dashboard 时设置 `HERMES_DASHBOARD_FILES_ROOT=${HERMES_HOME}`，强制 managed-files 根指向存在的目录（web_server 会自动创建），Files 页可正常浏览
 - **README**：补充徽章（Release/Downloads/fnOS/Hermes Agent/Upstream），并修正过时的 dashboard 绑定文档（0.0.0.0 + admin 登录）
 
+### 0.9.9.12 — 状态页终端改为容器内 shell（废弃 hermes --tui）
+- **改动**：状态页「终端」从 `hermes --tui`（原厂 Node.js ink 界面，体验差）改为**容器内 shell**（bash，回退 sh），PTY 直连
+- **收益**：不再依赖 hermes/node/ui-tui 那套 TUI 启动链路；进入终端后可直接敲 `hermes model` / `hermes init` / `hermes chat` 等初始化命令
+- **实现**：`_handle_pty_ws` spawn `bash`（`find_shell()` 回退 `sh`），cwd 指向 HERMES_HOME，并把 `HERMES_BIN` 所在目录加入 PATH 方便调用 hermes CLI
+- **保留**：dashboard Chat 仍走 `hermes --tui`（ui-tui/tui_dist/node 依赖不动），状态页不再重复这一套
+
 ---
 
 ## 待办 / TODO

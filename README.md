@@ -14,7 +14,7 @@ Hermes Agent 自包含全能套件（fnOS 应用）。内核升级到官方 **He
 fnOS
 ├── HermesCore v2（内核套件，有文件权限，包含所有服务）
 │   ├── Gateway        :8642   ← hermes gateway run（v0.20.0）
-│   ├── 状态页+终端    :8648   ← status_server.py（PTY 原生终端 + hermes --tui）
+│   ├── 状态页+终端    :8648   ← status_server.py（PTY 容器终端 shell，可跑 hermes model/init 等）
 │   └── Dashboard UI   :9119   ← hermes dashboard --host 0.0.0.0（登录 admin）
 └── HermesDashboard（空壳套件，无文件权限，反向代理）
     └── 桌面图标 → 反向代理 0.0.0.0:9118 → 本机 127.0.0.1:9119（免登录 WebUI）
