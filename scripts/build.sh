@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CUR_VER="$(cat "$ROOT/VERSION" 2>/dev/null | tr -d '[:space:]')"
 [ -z "$CUR_VER" ] && CUR_VER="0.9.9"
 FPK_DIR="/vol1/1000/fnOS App/fpk/HermesCore"
-OLDFPK_DIR="/vol1/1000/fnOS App/fpk/oldfpk"
+OLDFPK_DIR="/vol1/1000/fnOS App/old_fpk/HermesCore"
 
 # --- 检查离线 venv 包是否存在 ---
 OFFLINE_VENV="${ROOT}/app/venv.tar.gz"
