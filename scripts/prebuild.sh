@@ -99,6 +99,18 @@ for SUB in locales skills optional-mcps providers; do
         cp -r "${SRC}/${SUB}"/* "${SITE_PKG}/${SUB}/" 2>/dev/null || true
     fi
 done
+# 补 TUI workspace (dashboard Chat 依赖 ui-tui，wheel 不含)
+if [ -d "${SRC}/ui-tui" ]; then
+    echo "  补全 ui-tui/ (TUI workspace)..."
+    rm -rf "${SITE_PKG}/ui-tui" 2>/dev/null
+    cp -r "${SRC}/ui-tui" "${SITE_PKG}/ui-tui" 2>/dev/null || true
+fi
+# 补预构建 TUI bundle (dashboard Chat 的 _find_bundled_tui 用 hermes_cli/tui_dist/entry.js)
+if [ -f "${SRC}/ui-tui/dist/entry.js" ]; then
+    echo "  补全 hermes_cli/tui_dist/entry.js (预构建 TUI bundle)..."
+    mkdir -p "${SITE_PKG}/hermes_cli/tui_dist"
+    cp "${SRC}/ui-tui/dist/entry.js" "${SITE_PKG}/hermes_cli/tui_dist/entry.js" 2>/dev/null || true
+fi
 
 echo "=== 5/5 打包 venv.tar.gz ==="
 rm -f "$VENV_TAR"
