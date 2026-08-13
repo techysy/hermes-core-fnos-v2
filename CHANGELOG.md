@@ -56,9 +56,27 @@
 - **根因**：status_server.py 的 PAGE 模板 JS 花括号未转义（4 处漏 `{{`/`}}`），`.format()` 误判
 - **修复**：转义 4 处 JS 单花括号，Python 验证渲染成功
 
+### 0.9.9.7 — 状态页终端改为原厂 TUI
+- **改动**：状态页终端从 `hermes chat`（Python CLI）改为 `hermes --tui`（原厂 Node.js ink 界面），体验一致
+- **依赖**：ui-tui + node（0.9.9.5 已就绪）
+- **验证**：`hermes --tui` 通过 PtyBridge 能在 PTY 正常启动
+
+### 0.9.9.8 — 修复 dashboard Chat 缺 tui_dist
+- **问题**：dashboard Chat 仍不可用
+- **根因**：Chat 的 `_find_bundled_tui()` 找 `hermes_cli/tui_dist/entry.js`（预构建 TUI bundle），wheel 缺此文件（之前补的 ui-tui 是源码目录，Chat 用的是 tui_dist）
+- **修复**：prebuild.sh 把 `ui-tui/dist/entry.js` 复制为 `hermes_cli/tui_dist/entry.js`
+
+### 0.9.9.9 — dashboard 绑定 loopback 免认证（配合空壳反向代理）
+- **改动**：dashboard 从 `--host 0.0.0.0` 改为 `--host 127.0.0.1`
+- **原因**：v0.20.0 废弃 `--insecure`，绑定 0.0.0.0 强制认证；绑定 127.0.0.1（loopback）则免认证（auth gate 只在非 loopback 触发）
+- **配合**：空壳 app（HermesDashboard）新增反向代理 `0.0.0.0:9118 → 127.0.0.1:9119`，局域网免登录访问 dashboard
+- **验证**：dashboard 绑 127.0.0.1 首页 HTTP 200 无重定向（免登录）；反向代理转发正常
+
 ---
 
 ## 待办 / TODO
-- [ ] dashboard Chat 实际验证（ui-tui + node 已就绪，待用户确认）
-- [ ] 空壳 app 桌面图标最终确认指向 :9119
+- [ ] 空壳反向代理 + dashboard loopback 免认证方案，在 101 重装验证
+- [ ] dashboard Chat 实际验证（tui_dist 已补，待重装确认）
+- [ ] dashboard Files 404 排查
+- [ ] 空壳 app 桌面图标最终确认指向 :9118（反向代理）
 - [ ] 测试通过后 `--formal` 发布 1.0.0

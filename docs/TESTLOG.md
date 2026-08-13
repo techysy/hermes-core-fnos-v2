@@ -121,6 +121,59 @@ status.log: KeyError: ' setTimeout(sendTermSize, 50); '
 
 ---
 
+### 2026-08-13 07:58 — 0.9.9.6 重装后 dashboard Files/Chat
+
+**结果**：
+- ✅ dashboard :9119 打开（系统状态页正常，Hermes v0.20.0 / Python 3.12.4）
+- ❌ dashboard **Files 404**：`Error: 404: {"detail":"Path not found"}`
+- ❌ dashboard **Chat unavailable: 1**
+
+**诊断**：
+```
+dashboard.log: HERMES_DASHBOARD_READY port=9119  (无 TUI 缺失错误, ui-tui 已补)
+```
+
+**Files 404 根因**（待确认）：dashboard 文件管理 API 404，可能是前端请求路径与 v0.20.0 API 不匹配，或 managed files 根目录问题（待排）。
+
+**Chat 根因**（0.9.9.8 修复）：Chat 的 `_find_bundled_tui()` 找 `hermes_cli/tui_dist/entry.js`（预构建 TUI bundle），wheel 缺此文件（之前补的 ui-tui 是源码目录，Chat 用的是 tui_dist，不是 ui-tui）。
+
+---
+
+### 2026-08-13 08:00 — 0.9.9.8 补 tui_dist + 状态页终端 TUI
+
+**结果**：
+- ✅ 补 `hermes_cli/tui_dist/entry.js`（从 ui-tui/dist/entry.js 复制），`_find_bundled_tui` 能找到
+- ✅ 状态页终端改为 `hermes --tui`（原厂 TUI，0.9.9.7 改动），通过 PtyBridge 能启动
+
+**验证**：
+```
+hermes --tui (无 TTY) → "hermes-tui: no TTY" (普通 shell 会报)
+hermes --tui via PtyBridge → spawn OK (PTY 环境正常)
+```
+
+---
+
+### 2026-08-13 08:20 — 免认证方案（0.9.9.9 + 空壳反向代理）
+
+**需求**：空壳面板打开免登录直接进 dashboard
+
+**方案探索**：
+- ❌ `--insecure`：v0.20.0 已废弃（NO-OP），绑定 0.0.0.0 强制认证
+- ❌ URL token：gated 模式（绑 0.0.0.0）下 `?token=` 被拒绝
+- ✅ **dashboard 绑 127.0.0.1（loopback）免认证** + 空壳反向代理
+
+**验证**：
+```
+dashboard --host 127.0.0.1 → 首页 HTTP 200 无重定向 (免登录!)
+反向代理 0.0.0.0:9118 → 127.0.0.1:9119 → 转发正常 (path 保留, Host 重写)
+```
+
+**实现**（HermesCore 0.9.9.9 + 空壳 1.0.0.1）：
+- HermesCore：dashboard `--host 0.0.0.0` → `--host 127.0.0.1`
+- 空壳 HermesDashboard：新增 `cmd/proxy.py` 反向代理（0.0.0.0:9118 → 127.0.0.1:9119），cmd/main 启动/停止，ui/config 指向 9118
+
+---
+
 ## 已修复问题汇总
 
 | # | 问题 | 版本 | 类型 |
@@ -132,11 +185,14 @@ status.log: KeyError: ' setTimeout(sendTermSize, 50); '
 | 5 | wheel 缺 ui-tui → Chat 不可用 | 0.9.9.5 | wheel 打包缺资源 |
 | 6 | node 缺失 → Chat/TUI 不可用 | 0.9.9.5 | 依赖缺失 |
 | 7 | status_server PAGE 花括号未转义 → 8648 崩溃 | 0.9.9.6 | 模板 bug |
+| 8 | wheel 缺 tui_dist/entry.js → Chat 仍不可用 | 0.9.9.8 | wheel 打包缺资源 |
+| 9 | dashboard 绑 0.0.0.0 强制认证 → 无法免登录 | 0.9.9.9 | v0.20.0 安全加固 |
 
 ## 核心经验 / 教训
 
-1. **Hermes v0.20.0 wheel 缺大量资源**（plugin.yaml、web_dist、ui-tui、locales、skills 等）——官方设计是运行时通过 env-var 或源码布局提供。预构建 fpk 必须**从源码补全这些资源**。
+1. **Hermes v0.20.0 wheel 缺大量资源**（plugin.yaml、web_dist、ui-tui、**tui_dist**、locales、skills 等）——官方设计是运行时通过 env-var 或源码布局提供。预构建 fpk 必须**从源码补全这些资源**。
 2. **插件 opt-in**：`plugins.enabled` 必须显式声明，否则 dashboard auth 等不加载。
 3. **aiohttp 是可选依赖**：gateway api_server 需要，需手动补装。
-4. **TUI/Chat 依赖 ui-tui + node**：wheel 缺 ui-tui，node 需 manifest 声明 nodejs_v24。
+4. **TUI/Chat 依赖 ui-tui + tui_dist + node**：wheel 缺 ui-tui 和 tui_dist/entry.js；node 需 manifest 声明 nodejs_v24。注意 **Chat 用 `hermes_cli/tui_dist/entry.js`**（不是 ui-tui 源码目录）。
 5. **fnOS 上 venv 用 python312 建**（作为 base），不能直接搬 python311 venv。
+6. **v0.20.0 安全加固**：废弃 `--insecure`，绑定 0.0.0.0 必须认证。**免登录方案 = dashboard 绑 127.0.0.1（loopback 免认证）+ 空壳反向代理**（局域网经代理访问）。
