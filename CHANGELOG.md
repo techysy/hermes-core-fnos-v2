@@ -71,12 +71,23 @@
 - **原因**：v0.20.0 废弃 `--insecure`，绑定 0.0.0.0 强制认证；绑定 127.0.0.1（loopback）则免认证（auth gate 只在非 loopback 触发）
 - **配合**：空壳 app（HermesDashboard）新增反向代理 `0.0.0.0:9118 → 127.0.0.1:9119`，局域网免登录访问 dashboard
 - **验证**：dashboard 绑 127.0.0.1 首页 HTTP 200 无重定向（免登录）；反向代理转发正常
+- **⚠️ 已回滚**（提交 a6b45f3）：改为继续绑定 `0.0.0.0` + 登录 `admin`（放弃 loopback 免认证方案，见 0.9.9.10）
+
+### 0.9.9.10 — 修复状态页终端白屏 + dashboard Files 404
+- **状态页终端白屏（根因：缺 xterm.js vendor 资源）**
+  - **现象**：状态页「终端」面板一片空白
+  - **根因**：`status_server.py` 引用了 `/vendor/xterm.min.js`、`xterm.min.css`、`xterm-addon-fit.min.js`，但 `cmd/vendor/` 目录**从 v1 迁移到 v2 时丢失**，fpk 里没有 → xterm.js 加载 404（实测 `GET /vendor/xterm.min.js` 返回 HTTP 404）→ `typeof Terminal === 'undefined'` → 终端面板不初始化，白屏
+  - **修复**：从 v1（hermes-core-fnos）补齐 `cmd/vendor/{xterm.min.js, xterm.min.css, xterm-addon-fit.min.js}` 进 v2 仓库，随 fpk 打包
+- **dashboard Files 页 404 `Path not found`**
+  - **现象**：dashboard 的 Files 页面报 `Error: 404: {"detail":"Path not found"}`
+  - **根因**：HermesCore 服务以 `HermesCore` 用户运行，其 `$HOME=/home/HermesCore` **不存在**；`/api/files` 默认把 managed-files 根解析到 `Path.home()` → 目录不存在 → 404
+  - **修复**：cmd/main 启动 dashboard 时设置 `HERMES_DASHBOARD_FILES_ROOT=${HERMES_HOME}`，强制 managed-files 根指向存在的目录（web_server 会自动创建），Files 页可正常浏览
+- **README**：补充徽章（Release/Downloads/fnOS/Hermes Agent/Upstream），并修正过时的 dashboard 绑定文档（0.0.0.0 + admin 登录）
 
 ---
 
 ## 待办 / TODO
-- [ ] 空壳反向代理 + dashboard loopback 免认证方案，在 101 重装验证
+- [ ] 空壳反向代理 + dashboard 认证方案，在 101 重装验证
 - [ ] dashboard Chat 实际验证（tui_dist 已补，待重装确认）
-- [ ] dashboard Files 404 排查
 - [ ] 空壳 app 桌面图标最终确认指向 :9118（反向代理）
 - [ ] 测试通过后 `--formal` 发布 1.0.0

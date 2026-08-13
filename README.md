@@ -2,6 +2,12 @@
 
 Hermes Agent 自包含全能套件（fnOS 应用）。内核升级到官方 **Hermes Agent v0.20.0**，前端预构建进 fpk。
 
+[![Release](https://img.shields.io/github/v/release/techysy/hermes-core-fnos-v2.svg?label=Latest&color=blue)](https://github.com/techysy/hermes-core-fnos-v2/releases)
+[![Downloads](https://img.shields.io/github/downloads/techysy/hermes-core-fnos-v2/total?label=Downloads&color=green)](https://github.com/techysy/hermes-core-fnos-v2/releases)
+[![fnOS](https://img.shields.io/badge/fnOS-1.1.31xx-blue)](https://developer.fnnas.com/docs/guide)
+[![Hermes Agent](https://img.shields.io/pypi/v/hermes-agent.svg)](https://pypi.org/project/hermes-agent/)
+[![Upstream](https://img.shields.io/github/v/release/NousResearch/hermes-agent.svg?label=Upstream&color=purple)](https://github.com/NousResearch/hermes-agent/releases)
+
 ## 架构
 
 ```
@@ -9,16 +15,15 @@ fnOS
 ├── HermesCore v2（内核套件，有文件权限，包含所有服务）
 │   ├── Gateway        :8642   ← hermes gateway run（v0.20.0）
 │   ├── 状态页+终端    :8648   ← status_server.py（PTY 原生终端 + hermes --tui）
-│   └── Dashboard UI   :9119   ← hermes dashboard --host 127.0.0.1（loopback 免认证）
-│        └── 文件/配置修改 → 走 :9119 API → 内核(Python) 读写
+│   └── Dashboard UI   :9119   ← hermes dashboard --host 0.0.0.0（登录 admin）
 └── HermesDashboard（空壳套件，无文件权限，反向代理）
     └── 桌面图标 → 反向代理 0.0.0.0:9118 → 本机 127.0.0.1:9119（免登录 WebUI）
 ```
 
 - **空壳 = WebUI（:9118 反向代理）**，用来配置；内核 = 包含所有服务。
-- **免认证方案**：v0.20.0 废弃 `--insecure`，绑定 0.0.0.0 强制认证；故 dashboard 绑定 `127.0.0.1`（loopback 免认证），空壳 app 提供反向代理 `0.0.0.0:9118 → 127.0.0.1:9119`，局域网设备经空壳访问 dashboard 免登录。
+- **认证方案**：v0.20.0 废弃 `--insecure`，绑定 `0.0.0.0` 强制认证（登录 `admin`）；空壳 app 提供反向代理 `0.0.0.0:9118 → 127.0.0.1:9119`，局域网设备经空壳访问 dashboard 免登录。
 - 前端对配置/文件修改走 :9119 API → HermesCore 内核(Python) 读写，规避空壳无文件权限问题。
-- 端口：Gateway :8642 / 状态页+终端 :8648 / Dashboard :9119（loopback）/ 空壳代理 :9118。
+- 端口：Gateway :8642 / 状态页+终端 :8648 / Dashboard :9119 / 空壳代理 :9118。
 
 ## 版本状态
 

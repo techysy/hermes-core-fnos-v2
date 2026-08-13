@@ -181,6 +181,10 @@ start_dashboard() {
         log "dashboard: generated random password, persisted to ${CONFIG_FILE} (set DASHBOARD_PASSWORD to control)"
     fi
     export HERMES_HOME
+    # 修复 dashboard Files 页 404 "Path not found"：服务以 HermesCore 用户运行，其
+    # $HOME (/home/HermesCore) 不存在 → /api/files 默认解析到不存在的 home 目录报 404。
+    # 显式指定 managed files 根目录（HERMES_HOME，web_server 会自动创建），让 Files 页可浏览。
+    export HERMES_DASHBOARD_FILES_ROOT="${HERMES_HOME}"
     # dashboard 绑定 0.0.0.0 (局域网可访问)。v0.20.0 绑 0.0.0.0 强制认证, 手动登录 admin/admin。
     nohup "${VENV}/bin/hermes" dashboard --port "${DASHBOARD_PORT}" --host 0.0.0.0 --skip-build --no-open >> "${DASHBOARD_LOG}" 2>&1 &
     echo $! > "${DASHBOARD_PID}"

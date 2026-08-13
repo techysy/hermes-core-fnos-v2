@@ -15,6 +15,7 @@
 | 0.9.9.4 | wheel bundled 资源 | ✅ dashboard 打开 (system 页)，Chat 不可用 |
 | 0.9.9.5 | Chat/TUI (ui-tui + node) | ✅ dashboard 正常，待验证 Chat |
 | 0.9.9.6 | 状态页 8648 渲染 | ✅ 花括号修复，渲染验证通过 |
+| 0.9.9.10 | 状态页终端白屏 + dashboard Files 404 | ✅ 定位并修复（缺 xterm vendor + managed-files 根） |
 
 ---
 
@@ -172,6 +173,44 @@ dashboard --host 127.0.0.1 → 首页 HTTP 200 无重定向 (免登录!)
 - HermesCore：dashboard `--host 0.0.0.0` → `--host 127.0.0.1`
 - 空壳 HermesDashboard：新增 `cmd/proxy.py` 反向代理（0.0.0.0:9118 → 127.0.0.1:9119），cmd/main 启动/停止，ui/config 指向 9118
 
+> ⚠️ 0.9.9.9 方案已回滚（提交 a6b45f3）：dashboard 改回绑 `0.0.0.0` + 登录 `admin`，放弃 loopback 免认证。
+
+---
+
+### 2026-08-13 14:00 — 0.9.9.10 定位状态页终端白屏 + dashboard Files 404（101 线上排查）
+
+**结果**：
+- ❌ 状态页「终端」面板白屏（xterm.js 未加载）
+- ❌ dashboard Files 页 404 `{"detail":"Path not found"}`
+
+**诊断（线上 101 实测）**：
+```bash
+# ① 白屏：/vendor/xterm.min.js 404
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8648/vendor/xterm.min.js
+# → 404  (status_server.py 从 cmd/vendor/ 读 xterm.js，但该目录在 fpk 里不存在)
+
+# ② Files 404：HermesCore 用户 $HOME 不存在
+grep HermesCore /etc/passwd
+# → HermesCore:x:968:901::/home/HermesCore:/usr/sbin/nologin
+ls -ld /home/HermesCore   # → No such file or directory
+```
+
+**根因**：
+1. **白屏**：`status_server.py` 引用 `/vendor/xterm.{min.js,min.css,addon-fit.min.js}`，但 `cmd/vendor/` 目录**从 v1 迁移到 v2 时丢失** → xterm.js 加载 404 → `typeof Terminal === 'undefined'` → `initTerm()` 直接 return → 终端面板空白。
+2. **Files 404**：`/api/files` 默认把 managed-files 根解析为 `Path.home()`（HermesCore 用户 `/home/HermesCore`），该目录**不存在** → `_canonical_path(..., require_exists=True)` 抛 404 `Path not found`。
+
+**修复**（0.9.9.10）：
+- 从 v1（hermes-core-fnos）补齐 `cmd/vendor/{xterm.min.js, xterm.min.css, xterm-addon-fit.min.js}`（共 ~288KB）进 v2 仓库，随 fpk 打包。
+- cmd/main 启动 dashboard 时设置 `export HERMES_DASHBOARD_FILES_ROOT="${HERMES_HOME}"`，强制 managed-files 根指向存在的 `/vol4/@appdata/HermesCore/hermes_home`（web_server 的 `_ensure_managed_root` 会自动创建/确认）。
+
+**验证（venv 内模拟 policy）**：
+```python
+import os, hermes_cli.web_server as ws
+os.environ["HERMES_DASHBOARD_FILES_ROOT"]="/vol4/@appdata/HermesCore/hermes_home"
+root = ws._ensure_managed_root(os.environ["HERMES_DASHBOARD_FILES_ROOT"])
+print(root.is_dir())  # → True，/api/files 可解析
+```
+
 ---
 
 ## 已修复问题汇总
@@ -187,6 +226,8 @@ dashboard --host 127.0.0.1 → 首页 HTTP 200 无重定向 (免登录!)
 | 7 | status_server PAGE 花括号未转义 → 8648 崩溃 | 0.9.9.6 | 模板 bug |
 | 8 | wheel 缺 tui_dist/entry.js → Chat 仍不可用 | 0.9.9.8 | wheel 打包缺资源 |
 | 9 | dashboard 绑 0.0.0.0 强制认证 → 无法免登录 | 0.9.9.9 | v0.20.0 安全加固 |
+| 10 | cmd/vendor/ 丢失 → 状态页终端白屏（xterm.js 404） | 0.9.9.10 | 迁移漏拷资源 |
+| 11 | $HOME 不存在 → dashboard Files 404 `Path not found` | 0.9.9.10 | 服务用户无 home |
 
 ## 核心经验 / 教训
 
@@ -196,3 +237,5 @@ dashboard --host 127.0.0.1 → 首页 HTTP 200 无重定向 (免登录!)
 4. **TUI/Chat 依赖 ui-tui + tui_dist + node**：wheel 缺 ui-tui 和 tui_dist/entry.js；node 需 manifest 声明 nodejs_v24。注意 **Chat 用 `hermes_cli/tui_dist/entry.js`**（不是 ui-tui 源码目录）。
 5. **fnOS 上 venv 用 python312 建**（作为 base），不能直接搬 python311 venv。
 6. **v0.20.0 安全加固**：废弃 `--insecure`，绑定 0.0.0.0 必须认证。**免登录方案 = dashboard 绑 127.0.0.1（loopback 免认证）+ 空壳反向代理**（局域网经代理访问）。
+7. **迁移仓库务必带上 `cmd/vendor/`（xterm.js 等本地静态资源）**：v2 复用 v1 资源时漏拷 vendor 目录，导致状态页终端 xterm.js 404 白屏。status_server 的本地静态资源必须在 fpk 里。
+8. **fnOS 服务应用以专用用户运行、其 `$HOME` 常不存在**：dashboard 等按 `Path.home()` 解析默认路径的 API（如 `/api/files`）会 404。用环境变量（如 `HERMES_DASHBOARD_FILES_ROOT`）显式指定存在的根目录。
