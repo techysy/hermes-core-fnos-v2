@@ -164,11 +164,19 @@ fix_venv_paths() {
 
     # 3. 修正 editable finder 路径（打包机路径 → 部署路径）
     #    finder.py 的 MAPPING/NAMESPACES 里全是打包机绝对路径, 全部替换为 $VENV_DIR/src/hermes-agent
+    #    ⚠️ 必须用 venv 自己的 site-packages 路径 ($VENV_DIR/lib/pythonX/site-packages),
+    #       不能用 $TARGET_PY (python311 应用) 算 — 那会得到 python311 应用的 site-packages,
+    #       导致 glob 找不到 venv 里的 finder.py, 重写不生效 (2026-08-17 踩坑: 部署后 hermes 启动
+    #       报 PermissionError 找不到打包机路径 /home/.../.build/venv/src/hermes-agent)
     local SITE_PKG_DIR=""
-    if [ -n "$TARGET_PY" ] && [ -x "$TARGET_PY" ]; then
-        SITE_PKG_DIR="$("$TARGET_PY" -c 'import site,sys; print(site.getsitepackages()[0])' 2>/dev/null)"
-    else
+    # venv 的 site-packages: python3.11 固定为 lib/python3.11/site-packages
+    if [ -d "${VENV_DIR}/lib/python3.11/site-packages" ]; then
         SITE_PKG_DIR="${VENV_DIR}/lib/python3.11/site-packages"
+    elif [ -d "${VENV_DIR}/lib/python3.12/site-packages" ]; then
+        SITE_PKG_DIR="${VENV_DIR}/lib/python3.12/site-packages"
+    else
+        # 兜底: 从 venv 实际 python 找 (venv/bin/python 已修复软链到 fnOS python)
+        SITE_PKG_DIR="$("${VENV_DIR}/bin/python" -c 'import site,sys; print(site.getsitepackages()[0])' 2>/dev/null)"
     fi
     local SRC_IN_VENV="${VENV_DIR}/src/hermes-agent"
     if [ -n "$SITE_PKG_DIR" ] && [ -d "$SRC_IN_VENV" ]; then
