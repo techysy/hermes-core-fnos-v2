@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 1.0.0 (正式版)
+
+> 正式发布。内核 v0.20.1（源码 git checkout + editable 安装），python311，面板「代理」设置，容器内一键 `hermes update`。
+
+### 新增 / Added
+- **容器内一键 `hermes update`** — 内核改为源码 git checkout（含 .git）+ editable 安装，容器终端直接 `hermes update` 拉取 GitHub 最新（v0.20.1 在 main 分支），无需每次重打 fpk
+- **面板「🌐 代理」设置** — 配置页新增 HTTP_PROXY / HTTPS_PROXY / NO_PROXY，容器内所有网络（hermes update / 插件 / API）可走本地 mihomo 等代理
+- **python311** — 从 python312 切换为 python311，复用 31.31 原生 v0.20.1 环境（cp311 C 扩展）
+- **prebuild.sh 重构** — 改为 git checkout（浅克隆，含 .git）+ editable 安装，源码移入 venv/src/hermes-agent
+
+### 变更 / Changed
+- `arch = x86_64` → `platform = x86`（新规范）
+- `install_dep_apps = python311:nodejs_v24:git`（git 兜底依赖）
+- venv/bin/python 软链、editable finder 路径、git safe.directory / owner 由 install_callback 部署时自动修复
+
+---
+
 ## 0.9.9 (重构版起步)
 
 > v2 全新骨架：内核升级到官方 Hermes Agent v0.20.0（GitHub 源码），前端预构建进 fpk，空壳 app 指向 :9119 WebUI 配置。

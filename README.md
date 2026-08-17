@@ -1,6 +1,6 @@
 # Hermes Core for fnOS v2
 
-Hermes Agent 自包含全能套件（fnOS 应用）。内核升级到官方 **Hermes Agent v0.20.0**，前端预构建进 fpk。
+Hermes Agent 自包含全能套件（fnOS 应用）。内核升级到官方 **Hermes Agent v0.20.1**，前端预构建进 fpk。
 
 [![Release](https://img.shields.io/github/v/release/techysy/hermes-core-fnos-v2.svg?label=Latest&color=blue)](https://github.com/techysy/hermes-core-fnos-v2/releases)
 [![Downloads](https://img.shields.io/github/downloads/techysy/hermes-core-fnos-v2/total?label=Downloads&color=green)](https://github.com/techysy/hermes-core-fnos-v2/releases)
@@ -13,7 +13,7 @@ Hermes Agent 自包含全能套件（fnOS 应用）。内核升级到官方 **He
 ```
 fnOS
 ├── HermesCore v2（内核套件，有文件权限，包含所有服务）
-│   ├── Gateway        :8642   ← hermes gateway run（v0.20.0）
+│   ├── Gateway        :8642   ← hermes gateway run（v0.20.1）
 │   ├── 状态页+终端    :8648   ← status_server.py（PTY 容器终端 shell，可跑 hermes model/init 等）
 │   └── Dashboard UI   :9119   ← hermes dashboard --host 0.0.0.0（登录 admin）
 └── HermesDashboard（空壳套件，无文件权限，反向代理）
@@ -21,34 +21,39 @@ fnOS
 ```
 
 - **空壳 = WebUI（:9118 反向代理）**，用来配置；内核 = 包含所有服务。
-- **认证方案**：v0.20.0 废弃 `--insecure`，绑定 `0.0.0.0` 强制认证（登录 `admin`）；空壳 app 提供反向代理 `0.0.0.0:9118 → 127.0.0.1:9119`，局域网设备经空壳访问 dashboard 免登录。
+- **认证方案**：v0.20.1 废弃 `--insecure`，绑定 `0.0.0.0` 强制认证（登录 `admin`）；空壳 app 提供反向代理 `0.0.0.0:9118 → 127.0.0.1:9119`，局域网设备经空壳访问 dashboard 免登录。
 - 前端对配置/文件修改走 :9119 API → HermesCore 内核(Python) 读写，规避空壳无文件权限问题。
+
+## 特性
+- **面板「🌐 代理」设置**：配置页可设 HTTP/HTTPS/NO_PROXY，容器内所有网络（hermes update / 插件 / API）走本地 mihomo 等代理。
+- **容器内一键 `hermes update`**：内核为源码 git checkout（含 .git），容器终端直接 `hermes update` 拉取 GitHub 最新，无需每次重打 fpk。
+- 复用 31.31 原生 v0.20.1 环境思路：editable 源码安装 + python311。
 - 端口：Gateway :8642 / 状态页+终端 :8648 / Dashboard :9119 / 空壳代理 :9118。
 
 ## 版本状态
 
 | 版本 | 状态 |
 |------|------|
-| 0.9.9.x | **测试版**（进行中，见 docs/TESTLOG.md） |
-| 1.0.0 | 正式版（测试通过后发布） |
+| 0.9.9.x | 测试版（历史） |
+| 1.0.0 | **正式版（当前）** |
 
 ## 版本规划
 - 测试版：`0.9.9.x`（build.sh 自动累加第 4 位）
-- 稳定后发布正式版：`1.0.0`（`--formal`）
+- 正式版：`1.0.0`（当前）
 
 ## 构建流程
 
-### 1. 预构建内核（构建机 31.31 或 fnOS 101，需 python3.12 + Node）
+### 1. 预构建内核（构建机 31.31 或 fnOS 101，需 python3.11 + Node）
 ```bash
-bash scripts/prebuild.sh    # 产出 app/venv.tar.gz（v0.20.0 venv + web_dist + 全部资源）
+bash scripts/prebuild.sh    # 产出 app/venv.tar.gz（v0.20.1 venv + web_dist + 全部资源）
 ```
-> 默认复用本机现成 web_dist（v0.20.0 前端）；无则从源码 npm build。
+> 默认复用本机现成 web_dist（v0.20.1 前端）；无则从源码 npm build。
 > 会从源码补全 wheel 缺失的资源（plugin.yaml、ui-tui、locales、skills 等）。
 
 ### 2. 打包 fpk（NAS，需 fnpack）
 ```bash
 bash scripts/build.sh            # 测试版 0.9.9.x
-bash scripts/build.sh --formal   # 正式版 1.0.0
+bash scripts/build.sh --formal   # 正式版
 ```
 
 ### 3. 安装
@@ -63,7 +68,7 @@ bash scripts/build.sh --formal   # 正式版 1.0.0
 
 ## 目录结构
 ```
-├── manifest              # fnOS 清单（v0.9.9，声明 python312:nodejs_v24 依赖）
+├── manifest              # fnOS 清单（v1.0.0，声明 python311:nodejs_v24:git 依赖）
 ├── VERSION               # 0.9.9
 ├── ICON.PNG / ICON_256.PNG
 ├── app/
@@ -71,10 +76,10 @@ bash scripts/build.sh --formal   # 正式版 1.0.0
 │   └── venv.tar.gz       # 预构建离线 venv（构建产物，不入库）
 ├── cmd/
 │   ├── main              # 生命周期 start/stop/status
-│   ├── install_callback  # 离线解压 v0.20.0 venv
+│   ├── install_callback  # 离线解压 v0.20.1 venv
 │   └── status_server.py  # 状态页 + 原生终端
 ├── scripts/
-│   ├── prebuild.sh       # 预构建 v0.20.0 venv + web_dist + 资源补全
+│   ├── prebuild.sh       # 预构建 v0.20.1 venv + web_dist + 资源补全
 │   └── build.sh          # fnpack build + 版本累加
 ├── docs/
 │   └── TESTLOG.md        # 测试日志（遇到的问题与解决）
@@ -82,9 +87,9 @@ bash scripts/build.sh --formal   # 正式版 1.0.0
 ```
 
 ## 依赖
-- **python312**：fnOS 自动安装（venv base，cp312 C 扩展）
+- **python311**：fnOS 自动安装（venv base，cp311 C 扩展）
 - **nodejs_v24**：TUI/Chat 需要（manifest 声明）
 
 ## 上游
-- [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)（内核，v0.20.0）
+- [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)（内核，v0.20.1）
 - [techysy/hermes-core-fnos](https://github.com/techysy/hermes-core-fnos)（v1，历史版本，最小可用保留）

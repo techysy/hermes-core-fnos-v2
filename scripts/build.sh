@@ -6,7 +6,7 @@
 #   bash scripts/build.sh --formal   # 正式版：升第3位，去掉第4位（如 0.9.9.3 -> 0.10.0）
 #
 # 版本号单一来源：改 VERSION（三位基础），第4位由本脚本自动累加。
-# 依赖：先在本机/构建机跑 scripts/prebuild.sh 产出 app/venv.tar.gz（含 v0.20.0 内核 + web_dist）。
+# 依赖：先在本机/构建机跑 scripts/prebuild.sh 产出 app/venv.tar.gz（含 v0.20.1 内核 + web_dist）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,7 +18,7 @@ OLDFPK_DIR="/vol1/1000/fnOS App/old_fpk/HermesCore"
 # --- 检查离线 venv 包是否存在 ---
 OFFLINE_VENV="${ROOT}/app/venv.tar.gz"
 if [ ! -f "$OFFLINE_VENV" ]; then
-    echo "⚠️  未找到 app/venv.tar.gz（v0.20.0 预构建产物）。"
+    echo "⚠️  未找到 app/venv.tar.gz（v0.20.1 预构建产物）。"
     echo "   请先在构建机执行: bash scripts/prebuild.sh 生成后再打包。"
     exit 1
 fi

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# prebuild.sh — 预构建 Hermes v0.20.0 内核 + 前端，产出 app/venv.tar.gz（离线安装包）
+# prebuild.sh — 预构建 Hermes v0.20.1 内核 + 前端，产出 app/venv.tar.gz（离线安装包）
 #
 # 运行环境：构建机（31.31）或任意有 python3.12 + Node 的机器
 #   bash scripts/prebuild.sh                 # 默认用 python3.12
 #   PY=/usr/bin/python3.11 bash scripts/prebuild.sh   # 指定 python（仅验证用）
 #
-# 产物：app/venv.tar.gz（含 v0.20.0 venv + 预构建 web_dist）
+# 产物：app/venv.tar.gz（含 v0.20.1 venv + 预构建 web_dist）
 # 之后在 NAS 上：bash scripts/build.sh  -> fnpack build（fpk 内含 venv.tar.gz）
 set -euo pipefail
 
