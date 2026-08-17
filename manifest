@@ -12,6 +12,6 @@ distributor_url       = https://github.com/techysy/hermes-core-fnos-v2
 desktop_uidir         = ui
 desktop_applaunchname = HermesCore.Application
 service_port          = 8642
-install_dep_apps      = python311:nodejs_v24
+install_dep_apps      = python311:nodejs_v24:git
 ctl_stop              = true
 checkport             = false
