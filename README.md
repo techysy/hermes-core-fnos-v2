@@ -54,6 +54,13 @@ bash scripts/build.sh --formal   # 正式版 1.0.0
 ### 3. 安装
 在飞牛 NAS 应用中心手动安装 `HermesCore-*.fpk`（Web UI 手动安装是官方方式，CLI 已废弃）。
 
+### 卸载与数据清理
+- **升级不会丢数据**：`uninstall_callback` 只清理 venv（代码，安装时重建）和临时日志，**保留 `hermes_home`**（会话/插件/消息平台凭据/记忆）。fnOS 升级（uninstall→install）不会清掉用户数据。
+- **彻底清除用户数据**：若需完整清理（含飞书/微信凭据等敏感信息），在应用中心卸载后，手动删除数据目录：
+  ```bash
+  sudo rm -rf /vol4/@appdata/HermesCore/hermes_home
+  ```
+
 ## 目录结构
 ```
 ├── manifest              # fnOS 清单（v0.9.9，声明 python312:nodejs_v24 依赖）

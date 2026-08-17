@@ -1,9 +1,29 @@
 #!/bin/bash
-# uninstall_callback — 清理运行时数据/日志
+# uninstall_callback — 卸载清理
+#
+# ⚠️ 重要: fnOS 升级 fpk 时也会执行 uninstall_callback(再 install_callback)。
+# 若在此删除 hermes_home(会话/插件/消息平台凭据/记忆), 会导致"每次升级都丢数据"。
+# 因此这里【保留 hermes_home】用户数据, 只清理 venv(代码, install 会重建) 和 *.log/*.pid(临时)。
+# 真正需要彻底清除用户数据的用户, 请手动删除: /vol4/@appdata/HermesCore/hermes_home
+# (详见 README「卸载残留清理」)。
+#
+# 诊断: 记录本回调是否被调用(尤其升级时), 用于确认 fnOS 升级流程是否触发 uninstall。
+# 写到 DATA_DIR 外部(/tmp) 避免被本脚本的 *.log 清理删除。
 set -uo pipefail
 APP_NAME="${TRIM_APPNAME:-HermesCore}"
 DATA_DIR="${TRIM_PKGVAR:-/vol4/@appdata/${APP_NAME}}"
 
+DIAG="/tmp/hermescore-uninstall-diag.log"
+{
+    echo "=== $(date '+%F %T') uninstall_callback called ==="
+    echo "  USER=$(id -un) UID=$(id -u)"
+    echo "  TRIM_APPDEST=${TRIM_APPDEST:-<unset>}"
+    echo "  TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>}"
+    echo "  DATA_DIR=${DATA_DIR}"
+    echo "  hermes_home exists before clean: $([ -e "${DATA_DIR}/hermes_home" ] && echo YES || echo NO)"
+} >> "${DIAG}" 2>&1
+
 rm -f "${DATA_DIR}"/*.log "${DATA_DIR}"/*.pid 2>/dev/null || true
-rm -rf "${DATA_DIR}/venv" "${DATA_DIR}/hermes_home" 2>/dev/null || true
+# 只删 venv(代码/依赖, 非用户数据); 保留 hermes_home(用户数据, 升级不丢)
+rm -rf "${DATA_DIR}/venv" 2>/dev/null || true
 exit 0

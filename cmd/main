@@ -69,7 +69,10 @@ setup_plugins() {
     [ -x "${HERMES_BIN}" ] || { log "setup_plugins: hermes not found"; return 0; }
     local PLUGIN_DIR="${HERMES_HOME}/plugins/hermes-lark-streaming"
     if [ -d "${PLUGIN_DIR}" ]; then
-        log "setup_plugins: hermes-lark-streaming already installed"
+        # 插件目录已存在(可能手动装/已装): 仍要确保 config.yaml 已启用, 否则飞书插件不加载。
+        # (幂等: 已启用则 plugins enable 无副作用)
+        log "setup_plugins: hermes-lark-streaming already installed, ensuring enabled..."
+        "${HERMES_BIN}" plugins enable hermes-lark-streaming >> "${LOG}" 2>&1 || true
         return 0
     fi
     log "setup_plugins: installing hermes-lark-streaming (Feishu plugin)..."
@@ -114,9 +117,53 @@ start() {
     # 先提取旧 config.yaml 的 platforms 段 (飞书等消息网关配置), 避免覆盖丢失
     OLD_PLATFORMS=""
     [ -f "${HERMES_HOME}/config.yaml" ] && OLD_PLATFORMS="$(awk '/^platforms:/{flag=1} flag' "${HERMES_HOME}/config.yaml")"
+    # 同样提取旧 config.yaml 里 plugins.enabled 的非内核管理插件 (如 hermes-lark-streaming),
+    # 避免 write_config 重写 plugins.enabled 时丢失已启用的第三方插件。
+    OLD_PLUGINS=""
+    [ -f "${HERMES_HOME}/config.yaml" ] && OLD_PLUGINS="$(awk '/^plugins:/{p=1} p && /^  enabled:/{e=1;next} e && /^    - /{ if ($2 != "dashboard_auth/basic") print $0 }' "${HERMES_HOME}/config.yaml")"
+    # 同样提取旧 config.yaml 的 hermes_lark_streaming 段 (飞书流式卡片插件配置, 含 footer.fields 等),
+    # 避免 write_config 重写 config.yaml 时把用户修改的插件配置覆盖回默认值。
+    OLD_HERMES_LARK=""
+    [ -f "${HERMES_HOME}/config.yaml" ] && OLD_HERMES_LARK="$(awk '/^hermes_lark_streaming:/{flag=1; print; next} flag && /^[a-zA-Z_][a-zA-Z0-9_]*:/{flag=0} flag{print}' "${HERMES_HOME}/config.yaml")"
     write_config
 
     export HERMES_HOME
+    # 修复 Feishu 启动失败 `[Errno 13] Permission denied: '/home/HermesCore'`：
+    # HermesCore 服务以 HermesCore 用户运行，其 $HOME (/home/HermesCore) 不存在。
+    # Feishu adapter 的 app-lock (acquire_scoped_lock) 默认把锁目录解析到
+    # $XDG_STATE_HOME 或 Path.home()/.local/state → 落到不存在的 $HOME → mkdir 抛
+    # PermissionError → "Feishu startup failed"。这里把 HOME 与 XDG_STATE_HOME 显式
+    # 指到可写的 DATA_DIR，使任何基于 home/XDG 的写入（含 gateway 锁）都落到可写目录。
+    export HOME="${DATA_DIR}"
+    export XDG_STATE_HOME="${DATA_DIR}/state"
+    export HERMES_GATEWAY_LOCK_DIR="${XDG_STATE_HOME}/hermes/gateway-locks"
+    # 代理出口：默认走本机 mihomo (http://127.0.0.1:7890)。可在状态页「代理」分组覆盖。
+    # NO_PROXY 必须覆盖本机/内网服务（9Router :20128、mihomo :7890、飞书/微信等本地连接），
+    # 否则本机请求也会被塞进代理导致失败/死循环。只对 HTTPS 外网请求走代理。
+    # HTTP/HTTPS 代理一般不分：HTTPS_PROXY 未单独设置时自动跟随 HTTP_PROXY。
+    export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:7890}"
+    export HTTPS_PROXY="${HTTPS_PROXY:-${HTTP_PROXY}}"
+    export NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,.local,192.168.*,10.*,172.16.*,172.17.*,172.18.*,172.19.*,172.20.*,172.21.*,172.22.*,172.23.*,172.24.*,172.25.*,172.26.*,172.27.*,172.28.*,172.29.*,172.30.*,172.31.*}"
+    export http_proxy="${HTTP_PROXY}"
+    export https_proxy="${HTTPS_PROXY}"
+    export no_proxy="${NO_PROXY}"
+    log "proxy: HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} NO_PROXY=${NO_PROXY}"
+    # 容器内 hermes update 需要完整 git + 走代理 + safe.directory
+    #   - 用 /usr/bin/git (完整版, 含 remote-https; fnOS 的 /usr/local/bin/git 残缺)
+    #   - git 走 mihomo 代理 (http.proxy)
+    #   - safe.directory 允许 HermesCore 用户操作源码 checkout
+    # 把 /usr/bin 前置到 PATH, 让 hermes update 内部调用的 git 用完整版
+    export PATH="/usr/bin:$PATH"
+    # git 走代理 (与 HTTP_PROXY 一致)
+    git config --global http.proxy "${HTTP_PROXY}" 2>/dev/null || true
+    git config --global https.proxy "${HTTPS_PROXY}" 2>/dev/null || true
+    # safe.directory: HermesCore 数据目录下的源码 checkout
+    git config --global --add safe.directory "${DATA_DIR}/venv/src/hermes-agent" 2>/dev/null || true
+    # 源码 checkout 的 origin 指向 GitHub (容器内 hermes update 拉取源)
+    if [ -d "${DATA_DIR}/venv/src/hermes-agent/.git" ]; then
+        (git -C "${DATA_DIR}/venv/src/hermes-agent" remote set-url origin "https://github.com/NousResearch/hermes-agent.git" 2>/dev/null) || true
+    fi
+    log "git configured: PATH /usr/bin first, proxy=${HTTP_PROXY}"
     # Node.js runtime (仅 dashboard Chat 的 hermes --tui 需要) — fnOS nodejs_v24 依赖，优先用其 node
     # 状态页终端已是容器 shell, 不依赖 node; 此 node 仅供 dashboard Chat 用
     # hermes 通过 find_node_executable 从 PATH 或 HERMES_HOME/node 找 node
@@ -322,6 +369,12 @@ plugins:
   enabled:
     - dashboard_auth/basic
 EOF
+        # 保留旧 config.yaml 里 plugins.enabled 的其他插件 (如 hermes-lark-streaming),
+        # 避免 write_config 重写 plugins.enabled 后丢失已启用的第三方插件。
+        if [ -n "${OLD_PLUGINS:-}" ]; then
+            printf '%s\n' "${OLD_PLUGINS}" >> "${HERMES_HOME}/config.yaml"
+            log "preserved extra plugins in config.yaml: ${OLD_PLUGINS}"
+        fi
         log "dashboard.basic_auth configured (user=${DASHBOARD_USER}) + dashboard_auth/basic plugin enabled"
     fi
     # 保留已有 config.yaml 中 cmd/main 未管理的段落 (如 platforms 消息网关/自定义配置),
@@ -330,6 +383,12 @@ EOF
     if [ -n "${OLD_PLATFORMS:-}" ]; then
         printf '%s' "${OLD_PLATFORMS}" >> "${HERMES_HOME}/config.yaml"
         log "preserved platforms section from previous config.yaml"
+    fi
+    # 保留 hermes_lark_streaming 段 (飞书流式卡片插件配置, 含 footer.fields/streaming 等用户自定义),
+    # 避免 write_config 重写时把插件配置覆盖回默认值。追加在文件末尾。
+    if [ -n "${OLD_HERMES_LARK:-}" ]; then
+        printf '\n%s\n' "${OLD_HERMES_LARK}" >> "${HERMES_HOME}/config.yaml"
+        log "preserved hermes_lark_streaming section from previous config.yaml"
     fi
 }
 

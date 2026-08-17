@@ -321,7 +321,7 @@ def _app_version():
 STATUS_VER = _app_version()
 
 # 可配置字段: (gateway.env key, 表单 label, 是否敏感, 分组)
-# 分组: core=内核 / llm=LLM连接 / dash=Dashboard / feishu=飞书 / wechat=微信 / qq=QQ / dingtalk=钉钉
+# 分组: core=内核 / llm=LLM连接 / dash=Dashboard / feishu=飞书 / wechat=微信 / qq=QQ / dingtalk=钉钉 / proxy=代理
 CONFIG_FIELDS = [
     ("API_SERVER_HOST", "监听地址", False, "core"),
     ("API_SERVER_PORT", "API 端口", False, "core"),
@@ -335,6 +335,9 @@ CONFIG_FIELDS = [
     ("DASHBOARD_ENABLED", "Dashboard 开关", False, "dash"),
     ("DASHBOARD_USER", "Dashboard 用户名", False, "dash"),
     ("DASHBOARD_PASSWORD", "Dashboard 密码", True, "dash"),
+    ("HTTP_PROXY", "HTTP 代理地址", False, "proxy"),
+    ("HTTPS_PROXY", "HTTPS 代理地址", False, "proxy"),
+    ("NO_PROXY", "NO_PROXY 例外", False, "proxy"),
     ("FEISHU_APP_ID", "飞书应用 App ID", False, "feishu"),
     ("FEISHU_APP_SECRET", "飞书应用 Secret", True, "feishu"),
     ("FEISHU_VERIFICATION_TOKEN", "飞书验证 Token(验证码)", True, "feishu"),
@@ -352,6 +355,7 @@ CONFIG_GROUPS = {
     "core": ("🔧 内核", "core"),
     "llm": ("🧠 LLM 连接", "llm"),
     "dash": ("📊 Dashboard", "dash"),
+    "proxy": ("🌐 代理", "proxy"),
     "feishu": ("💬 飞书", "feishu"),
     "wechat": ("💬 微信", "wechat"),
     "qq": ("🐧 QQ", "qq"),
@@ -404,12 +408,31 @@ def _load_config():
 
 
 def _save_config(data):
-    """写 gateway.env. 只更新前端提交的字段, 未提交的保留原值 (避免误清空)."""
+    """写 gateway.env. 只更新前端提交的字段, 未提交的保留原值 (避免误清空).
+
+    兼容性: 只重写 CONFIG_FIELDS 白名单内的字段; gateway.env 中所有不在白名单
+    的自定义字段 (如 install_callback/其他工具追加的 EXTRA_ENV、未来新增 key 等)
+    原样保留, 绝不因状态页保存而丢失。
+    """
     if not CONFIG_FILE:
         return False, "CONFIG_FILE 未配置"
     try:
         # 读当前值, 未提交的字段保留原值
         current = _load_config()
+        # 保留 gateway.env 中不在 CONFIG_FIELDS 白名单的自定义字段 (原顺序/原值)
+        managed_keys = {k for k, _, _, _ in CONFIG_FIELDS}
+        extra_lines = []
+        try:
+            with open(CONFIG_FILE) as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if not _line or _line.startswith("#") or "=" not in _line:
+                        continue
+                    _k = _line.split("=", 1)[0].strip()
+                    if _k not in managed_keys:
+                        extra_lines.append(_line)
+        except Exception:
+            pass
         # Dashboard 联动: 配置了用户名/密码则自动启用 (无需单独开开关)
         if data.get("DASHBOARD_USER", "").strip() or data.get("DASHBOARD_PASSWORD", "").strip():
             data = dict(data)
@@ -423,6 +446,9 @@ def _save_config(data):
                     # 前端没提交 → 保留原值
                     val = current.get(key, "")
                 f.write(f'{key}="{val}"\n')
+            # 追加保留的自定义字段 (不在白名单内)
+            for el in extra_lines:
+                f.write(el + "\n")
         os.chmod(CONFIG_FILE, 0o600)
         return True, "saved"
     except Exception as e:
@@ -1088,7 +1114,7 @@ function closeMsgCard(grp) {{
   const ov = document.getElementById('msg-edit-' + grp);
   if (ov) ov.style.display = 'none';
 }}
-// 消息平台卡片: 保存该平台覆盖层内的字段
+// 消息平台卡片: 保存该平台覆盖层内的字段, 保存成功后自动重启内核生效
 async function saveMsgCard(grp) {{
   const ov = document.getElementById('msg-edit-' + grp);
   if (!ov) return;
@@ -1104,8 +1130,8 @@ async function saveMsgCard(grp) {{
   const r = await api('/api/config', 'POST', data);
   if (r.ok) {{
     closeMsgCard(grp);
-    showMsg('✅ 已保存，点右上角 🔄 重启生效', false, 'msg-messaging');
-    setTimeout(() => location.reload(), 800);
+    showMsg('✅ 已保存，正在重启内核生效...', false, 'msg-messaging');
+    restartCore();  // 自动重启 (原: 仅提示手动点重启 + location.reload)
   }} else {{
     showMsg('❌ 保存失败: ' + (r.error || ''), true, 'msg-messaging');
   }}
@@ -1201,7 +1227,10 @@ async function saveConfig(formId, msgId) {{
     [...fd.entries()].filter(([k, v]) => !(sensitive.includes(k) && !v.trim()))
   );
   const r = await api('/api/config', 'POST', data);
-  if (r.ok) showMsg(I18N[currentLang]['saved'], false, msgId);
+  if (r.ok) {{
+    showMsg(I18N[currentLang]['saved'], false, msgId);
+    restartCore();  // 自动重启生效 (原: 仅提示手动点重启)
+  }}
   else showMsg(I18N[currentLang]['save-fail'] + (r.error || ''), true, msgId);
 }}
 async function restartCore() {{
@@ -1520,8 +1549,18 @@ def _render_group_fields(cfg, grp_key):
             fields_html.append(f'<label>{label}</label>')
             fields_html.append(f'<input type="text" name="{key}" placeholder="{ph}" value="" autocomplete="off">')
         else:
+            # 代理分组: 输入框留空时显示默认值提示 (默认走本机 mihomo, 与 cmd/main 导出一致)
+            # HTTP/HTTPS 代理一般不分: HTTPS_PROXY 留空时跟随 HTTP_PROXY (cmd/main 兜底)
+            ph = ""
+            if grp_key == "proxy":
+                if key == "HTTPS_PROXY":
+                    ph = "留空则跟随 HTTP 代理"
+                else:
+                    _dflt = {"HTTP_PROXY": "http://127.0.0.1:7890",
+                             "NO_PROXY": "localhost,127.0.0.1,192.168.*"}.get(key, "")
+                    ph = f"默认: {_dflt}（留空用默认）" if _dflt else ""
             fields_html.append(f'<label>{label}</label>')
-            fields_html.append(f'<input type="text" name="{key}" value="{val}" autocomplete="off">')
+            fields_html.append(f'<input type="text" name="{key}" value="{val}" placeholder="{ph}" autocomplete="off">')
     if not fields_html:
         return ""
     return (f'<div class="cfg-section">'
@@ -1531,9 +1570,9 @@ def _render_group_fields(cfg, grp_key):
 
 
 def _form_fields(cfg):
-    """配置面板: 内核/Dashboard 分组 (LLM 配置走安装向导+模型供应商页, 不再显示)."""
+    """配置面板: 内核/Dashboard/代理 分组 (LLM 配置走安装向导+模型供应商页, 不再显示)."""
     parts = []
-    for grp_key in ("core", "dash"):
+    for grp_key in ("core", "dash", "proxy"):
         body = _render_group_fields(cfg, grp_key)
         if body:
             parts.append(body)

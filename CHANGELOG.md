@@ -90,6 +90,78 @@
 - **实现**：`_handle_pty_ws` spawn `bash`（`find_shell()` 回退 `sh`），cwd 指向 HERMES_HOME，并把 `HERMES_BIN` 所在目录加入 PATH 方便调用 hermes CLI
 - **保留**：dashboard Chat 仍走 `hermes --tui`（ui-tui/tui_dist/node 依赖不动），状态页不再重复这一套
 
+### 0.9.9.13 — 修复 Feishu 启动失败 `Permission denied: '/home/HermesCore'`
+- **问题**：dashboard 消息平台卡片报 `Feishu / Lark: Feishu startup failed: [Errno 13] Permission denied: '/home/HermesCore'`，飞书连不上
+- **根因**：HermesCore 服务以 `HermesCore` 用户运行，其 `$HOME=/home/HermesCore` **不存在**。Feishu adapter 的 app-lock（`gateway.status.acquire_scoped_lock`）默认把锁目录解析到 `$XDG_STATE_HOME` 或 `Path.home()/.local/state`（`Path.home()` 在 POSIX 上读 `$HOME` 环境变量）→ 落到不存在的 `$HOME` → `mkdir(parents=True)` 抛 `PermissionError` → 被 adapter `start()` 捕获为 `Feishu startup failed`
+- **修复**：`cmd/main` 启动 gateway 前显式导出可写的 `HOME="${DATA_DIR}"`、`XDG_STATE_HOME="${DATA_DIR}/state"`、`HERMES_GATEWAY_LOCK_DIR="${XDG_STATE_HOME}/hermes/gateway-locks"`，使基于 home/XDG 的写入（含 Feishu 网关锁）全部落到 `DATA_DIR`（可写），与 0.9.9.10 的 `HERMES_DASHBOARD_FILES_ROOT` 修复同思路
+- **验证**：重启内核后 Feishu 网关锁写入可写目录，adapter 不再抛 PermissionError
+
+### 0.9.9.15 — 状态页新增代理配置 + HermesCore 代理出口
+- **需求**：给 HermesCore 配置 HTTP 代理出口，使 Hermes 及其子进程（插件安装、pip、外网 API 调用）走 mihomo 代理。
+- **实现**：
+  - `cmd/status_server.py`：`CONFIG_FIELDS` 新增 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（新分组 `proxy`「🌐 代理」），主配置面板渲染该分组，保存走既有 `/api/config` 白名单机制。
+  - `cmd/main`：启动 gateway/dashboard 前 export `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`（含小写变体）。默认值 `http://127.0.0.1:7890`（本机 mihomo）；`NO_PROXY` 默认覆盖全部本机/内网段，避免 9Router(:20128)、mihomo(:7890)、飞书/微信等本地连接被误走代理。
+- **说明**：可在状态页「基础配置 → 🌐 代理」分组改代理，保存后点重启生效；留空则回退默认本机 mihomo。
+- **验证**：升级后 `core.log` 打印 `proxy: HTTP_PROXY=... NO_PROXY=...`；状态页出现代理分组。
+
+### 0.9.9.16 — 修复升级覆盖 gateway.env 消息平台凭据
+- **问题**：升级 fpk（0.9.9.15）后 `gateway.env` 里已配置的飞书凭据（FEISHU_APP_ID/SECRET 等）丢失，飞书连不上。
+- **根因**：`install_callback` 的「更新场景」分支用 `cat > gateway.env` **整文件重写**，只含向导的 8 个字段，把已有的消息平台凭据（FEISHU/WEIXIN/QQ/DINGTALK）和代理字段全部覆盖掉。
+- **修复**：`install_callback` 更新场景改为**就地更新**——只更新向导涉及的核心字段（API_SERVER_*/LLM_*/对应 provider key/DASHBOARD_*），保留 gateway.env 其余所有已有字段（`_update_env_kv`：存在则 sed 替换，不存在则追加）。
+- **验证**：模拟测试确认飞书/微信/代理凭据在向导更新后原样保留。
+
+### 0.9.9.17 — 状态页保存配置不再覆盖 gateway.env 自定义字段
+- **问题**：状态页 `/api/config` 保存时 `_save_config` 遍历 `CONFIG_FIELDS` 白名单重写整个 gateway.env，会丢弃 gateway.env 中所有不在白名单的自定义字段（如 `install_callback`/其他工具追加的 `EXTRA_ENV`、未来新增 key），与消息平台设置存在覆盖风险。
+- **修复**：`cmd/status_server.py` 的 `_save_config` 改为——只更新/保留 `CONFIG_FIELDS` 白名单字段，同时**原样保留 gateway.env 中所有不在白名单的自定义行**（读取 `extra_lines` 并在重写后追加），绝不因状态页保存消息平台/代理/内核配置而丢失任何自定义字段。
+- **验证**：模拟测试确认自定义字段（如 `EXTRA_CUSTOM_FIELD`）、飞书 secret、代理、Router key 在状态页保存后全部保留，提交字段正常更新。
+
+### 0.9.9.18 — 状态页代理分组显示默认值提示
+- **问题**：状态页「🌐 代理」分组输入框为空（无默认值提示），用户看不到默认走本机 mihomo `http://127.0.0.1:7890`。
+- **修复**：`cmd/status_server.py` 的 `_render_group_fields` 对 `proxy` 分组字段加 placeholder 默认值提示（HTTP_PROXY/HTTPS_PROXY 默认 `http://127.0.0.1:7890`、NO_PROXY 默认 `localhost,127.0.0.1,192.168.*`），留空即用默认。
+- **说明**：代理默认值本由 `cmd/main` 启动时导出；状态页输入框留空 = 用 cmd/main 默认，填写则覆盖。
+- **验证**：模拟渲染确认三个代理字段都有默认值 placeholder。
+
+### 0.9.9.19 — HTTP/HTTPS 代理自动跟随
+- **问题**：HTTP 和 HTTPS 代理在一般场景下不分（同一 mihomo 7890 同时处理两种协议），但当前 HTTP_PROXY/HTTPS_PROXY 独立配置，用户只填 HTTP_PROXY 时 HTTPS_PROXY 会被清空，导致 HTTPS 请求不走代理。
+- **修复**：
+  - `cmd/main`：`export HTTPS_PROXY="${HTTPS_PROXY:-${HTTP_PROXY}}"`——HTTPS_PROXY 未单独设置时自动跟随 HTTP_PROXY。
+  - `cmd/status_server.py`：状态页 HTTPS_PROXY 输入框 placeholder 改为「留空则跟随 HTTP 代理」，HTTP_PROXY/NO_PROXY 保留默认值提示。
+- **验证**：模拟三种场景——默认跟随 7890、只填 HTTP 时 HTTPS 跟随、单独填 HTTPS 时保留独立值，全部通过。
+
+### 0.9.9.20 — 修复升级清空 hermes_home 数据（根因）
+- **问题**：每次升级 fpk 都会丢 session、飞书/微信插件、消息平台凭据、记忆等所有用户数据。
+- **根因**：fnOS 升级流程会先执行 `uninstall_callback` 再 `install_callback`。旧版 `uninstall_callback` 里 `rm -rf "${DATA_DIR}/hermes_home"` 把 Hermes 全部用户数据目录删掉，install 后只剩基础空壳。
+- **修复**：`uninstall_callback` 改为**只删 venv（代码，install 会重建）和 *.log/*.pid（临时），保留 `hermes_home`**（用户数据，升级不丢）。真卸载如需彻底清除，README 提供 `rm -rf /vol4/@appdata/HermesCore/hermes_home` 手动方法。
+- **说明**：真正卸载会残留含飞书/微信凭据的用户数据，属可接受；README「卸载与数据清理」已提供手动完整清理方法。
+- **验证**：升级后 hermes_home 不再被清空（会话/插件/配置保留）。
+
+### 0.9.9.22 — 状态页保存配置后自动重启内核
+- **问题**：状态页保存配置（主配置面板 / 消息平台卡片）后只 `location.reload()` 刷新页面，需手动点 🔄 重启才生效；且刷新后跳到默认视图（聊天页），体验差。
+- **修复**：`cmd/status_server.py` 的 `saveConfig` 和 `saveMsgCard` 保存成功后调用 `restartCore()` **自动重启内核**生效（`restartCore` 会提示"重启中"并 5 秒后自动刷新），不再只是刷新页面。
+- **验证**：保存飞书/代理等配置后自动触发重启，状态页短暂不可用后自动刷新。
+
+### 0.9.9.23 — 修复飞书插件启用了又被 write_config 丢掉
+- **问题**：飞书插件 `hermes-lark-streaming` 已安装、飞书渠道已连通（gateway 2 platform），但 dashboard 提示"插件未启用"——config.yaml 的 `plugins.enabled` 不含它。
+- **根因**：`cmd/main` 每次启动 `write_config` 重新生成 config.yaml，只写 `plugins.enabled: [dashboard_auth/basic]`，把 `hermes-lark-streaming` 丢掉；且 `setup_plugins` 在插件目录已存在时直接 return，不执行 `hermes plugins enable`。
+- **修复**：
+  - `setup_plugins`：插件目录已存在时也执行 `hermes plugins enable hermes-lark-streaming`（幂等）。
+  - `write_config`：启动时提取旧 config.yaml `plugins.enabled` 里非 `dashboard_auth/basic` 的插件（`OLD_PLUGINS`），重写时合并保留。
+- **验证**：模拟测试确认 OLD_PLUGINS 提取与合并后 YAML 结构有效（`plugins.enabled` 同时含 dashboard_auth/basic 和 hermes-lark-streaming）。
+
+### 0.9.9.24 — 保留 config.yaml 中 hermes_lark_streaming 插件配置
+- **问题**：用户直接改 config.yaml 的 `hermes_lark_streaming.footer.fields`（加 context/tokens），重启后配置被 `write_config` 覆盖回插件默认值。
+- **根因**：`cmd/main` 每次启动 `write_config` 重写整个 config.yaml，只保留 `platforms` 段和 `plugins.enabled` 的非 basic 项，`hermes_lark_streaming` 段（插件配置）不在保留列表，被覆盖回默认。
+- **修复**：`cmd/main` 增加 `OLD_HERMES_LARK` 机制——启动时提取旧 config.yaml 的 `hermes_lark_streaming` 段，`write_config` 重写后追加保留。
+- **说明**：hermes-lark-streaming 插件无独立配置文件，`_get_hermes_config_path()` 直接读主 `config.yaml` 的 `hermes_lark_streaming` 顶层段（footer.fields 等）。用户自定义的插件配置段现可持久保存。
+- **验证**：模拟测试确认 `hermes_lark_streaming.footer.fields` 含 context/tokens 且顺序正确，重写后完整保留。
+
+### 0.9.9.25 — 修复状态页 500 崩溃（saveConfig 花括号未转义）
+- **问题**：状态页渲染报 500，`KeyError: '\n    showMsg(I18N'`，状态页打不开。
+- **根因**：0.9.9.22 给 `saveConfig` 加自动重启时，JS 里的 `{` `}` 写成**单花括号**，而状态页 `PAGE` 是 Python `.format()` 模板——`{` 被当作占位符，导致 KeyError。`saveMsgCard` 当时用的是正确双花括号，`saveConfig` 漏了。
+- **修复**：`cmd/status_server.py` 的 `saveConfig` 中 `if (r.ok) {` / `}` 改为 `{{` / `}}`。
+- **验证**：模板花括号校验残留未转义花括号 = 0；状态页可正常渲染。
+- **补充**：状态页 `saveDefaultModel` 保存 `LLM_MODEL` 到 gateway.env，`write_config` 据此生成 `model.default`——默认模型已通过 gateway.env 关联，不会被覆盖（勿直接改 config.yaml 的 model.default）。
+
 ---
 
 ## 待办 / TODO

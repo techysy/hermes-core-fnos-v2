@@ -111,29 +111,88 @@ else
     echo "[$(date '+%F %T')] upgrade: wizard empty, preserving existing gateway.env" >> "${LOG}"
 fi
 
-# 已安装则跳过
+# 已安装(升级场景): 旧 checkout 移走, 由下方离线/在线解压重建.
+# 不再跳过 — 源码 checkout 方案下 fpk 自带新 venv.tar.gz(含 .git), 升级必须重新解压,
+# 否则容器内仍是旧源码. 只备份 venv, 不动 hermes_home/gateway.env 等数据目录.
 if [ -x "${VENV}/bin/hermes" ]; then
-    echo "[$(date '+%F %T')] hermes already installed, skip" >> "${LOG}"
-    init_hermes_home
-    exit 0
+    echo "[$(date '+%F %T')] upgrade: existing hermes found, will rebuild venv from bundled checkout" >> "${LOG}"
+    # 保留旧 venv 到 .venv-old 以便回滚 (非必需, 磁盘够则留)
+    if [ -d "${VENV}" ]; then
+        rm -rf "${VENV}.old" 2>/dev/null
+        mv "${VENV}" "${VENV}.old" 2>/dev/null || true
+    fi
 fi
 
-# 修正 venv 的 shebang / pyvenv.cfg 绝对路径 → 当前部署路径
-# 离线 venv 打包时的路径与 fnOS 部署路径不同，需把 bin/* 脚本的 shebang
-# 和 pyvenv.cfg 指向 ${VENV} 的实际路径，否则 hermes 无法启动。
+# 修正 venv 的 shebang / 软链 / pyvenv.cfg / editable 路径 → 当前部署路径
+# 离线 venv 打包时的路径与 fnOS 部署路径不同，需：
+#   1. 修复 venv/bin/python 软链（打包时指向构建机 python，需指到 fnOS 的 python311）
+#   2. 修复 bin/* 脚本 shebang + pyvenv.cfg
+#   3. 重写 editable finder 路径（打包机路径 → 部署路径）
 fix_venv_paths() {
     local VENV_DIR="$1"
     local PY_BIN="${VENV_DIR}/bin/python3"
     [ -x "$PY_BIN" ] || PY_BIN="${VENV_DIR}/bin/python"
-    # 修正 bin/ 下所有脚本的 shebang（含 python3.12 等变体）
+
+    # 0. 修复 venv/bin/python 软链 → fnOS 的 python3.11（打包时指向构建机 uv python，会断）
+    #   优先用依赖应用 python311，其次系统 python3.11
+    local TARGET_PY=""
+    for cand in /vol4/@appcenter/python311/bin/python3.11 /vol3/@appcenter/python311/bin/python3.11 /usr/bin/python3.11 python3.11; do
+        [ -x "$cand" ] && TARGET_PY="$(command -v "$cand" 2>/dev/null || echo "$cand")" && break
+    done
+    if [ -n "$TARGET_PY" ] && [ -x "$TARGET_PY" ]; then
+        for link in python python3 python3.11; do
+            if [ -L "${VENV_DIR}/bin/${link}" ]; then
+                rm -f "${VENV_DIR}/bin/${link}"
+                ln -s "$TARGET_PY" "${VENV_DIR}/bin/${link}"
+            fi
+        done
+        PY_BIN="${VENV_DIR}/bin/python3"
+        echo "[$(date '+%F %T')] venv python -> $TARGET_PY" >> "${LOG}"
+    fi
+
+    # 1. 修正 bin/ 下所有脚本的 shebang
     for f in "${VENV_DIR}"/bin/*; do
         [ -f "$f" ] || continue
-        # 替换 shebang 中指向旧 venv 绝对路径的部分
         sed -i "1s|#!.*/bin/python.*|#!${PY_BIN}|" "$f" 2>/dev/null || true
     done
-    # 修正 pyvenv.cfg（home/executable 指向）
+
+    # 2. 修正 pyvenv.cfg（home/executable 指向）
     if [ -f "${VENV_DIR}/pyvenv.cfg" ]; then
         sed -i "s|^home = .*|home = $(dirname "$(dirname "$PY_BIN")")|" "${VENV_DIR}/pyvenv.cfg" 2>/dev/null || true
+        sed -i "s|^executable = .*|executable = ${TARGET_PY:-$PY_BIN}|" "${VENV_DIR}/pyvenv.cfg" 2>/dev/null || true
+    fi
+
+    # 3. 修正 editable finder 路径（打包机路径 → 部署路径）
+    #    finder.py 的 MAPPING/NAMESPACES 里全是打包机绝对路径, 全部替换为 $VENV_DIR/src/hermes-agent
+    local SITE_PKG_DIR=""
+    if [ -n "$TARGET_PY" ] && [ -x "$TARGET_PY" ]; then
+        SITE_PKG_DIR="$("$TARGET_PY" -c 'import site,sys; print(site.getsitepackages()[0])' 2>/dev/null)"
+    else
+        SITE_PKG_DIR="${VENV_DIR}/lib/python3.11/site-packages"
+    fi
+    local SRC_IN_VENV="${VENV_DIR}/src/hermes-agent"
+    if [ -n "$SITE_PKG_DIR" ] && [ -d "$SRC_IN_VENV" ]; then
+        for f in "$SITE_PKG_DIR"/__editable___hermes_agent_*_finder.py "$SITE_PKG_DIR"/__editable__.hermes_agent-*.pth; do
+            [ -f "$f" ] || continue
+            # 通用替换: 任何以 /venv/src/hermes-agent 结尾的绝对路径前缀 → 新路径
+            sed -i "s|/[^'"]*/venv/src/hermes-agent|$SRC_IN_VENV|g" "$f" 2>/dev/null || true
+            # 兜底: 替换常见构建机路径前缀
+            sed -i "s|$HOME/[^'"]*/hermes-agent|$SRC_IN_VENV|g" "$f" 2>/dev/null || true
+            sed -i "s|/[A-Za-z0-9._-]*/\.build/[^'"]*hermes-agent|$SRC_IN_VENV|g" "$f" 2>/dev/null || true
+        done
+        # 4. 给源码 checkout 配置 git safe.directory + origin + owner (供容器内 hermes update)
+        if [ -d "$SRC_IN_VENV/.git" ]; then
+            echo "git" > "$SRC_IN_VENV/.install_method"
+            git config --global --add safe.directory "$SRC_IN_VENV" 2>/dev/null || true
+            (git -C "$SRC_IN_VENV" remote set-url origin "https://github.com/NousResearch/hermes-agent.git" 2>/dev/null) || true
+            # 源码 checkout 的 owner 设为运行用户, 否则 hermes update 的 git fetch 无写权限 (.git/FETCH_HEAD)
+            # fnOS 应用以 app 用户运行 (如 HermesCore), 把源码目录 chown 给它
+            local RUN_USER=""
+            RUN_USER="$(stat -c '%U' "${VENV_DIR}" 2>/dev/null)"
+            [ -n "$RUN_USER" ] && chown -R "$RUN_USER" "$SRC_IN_VENV" 2>/dev/null || true
+            echo "[$(date '+%F %T')] git safe.directory + origin + owner configured for hermes update" >> "${LOG}"
+        fi
+        echo "[$(date '+%F %T')] editable src path → $SRC_IN_VENV" >> "${LOG}"
     fi
 }
 
@@ -161,7 +220,7 @@ fi
 # 在线模式 (A 方案)
 echo "[$(date '+%F %T')] online mode: creating venv at ${VENV}" >> "${LOG}"
 PY=/usr/bin/python3
-[ -x /vol4/@appcenter/python312/bin/python3.12 ] && PY=/vol4/@appcenter/python312/bin/python3.12
+[ -x /vol4/@appcenter/python311/bin/python3.11 ] && PY=/vol4/@appcenter/python311/bin/python3.11
 
 "${PY}" -m venv "${VENV}" >> "${LOG}" 2>&1
 if [ ! -x "${VENV}/bin/pip" ]; then
