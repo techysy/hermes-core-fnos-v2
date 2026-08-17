@@ -1,9 +1,9 @@
 appname               = HermesCore
-version               = 0.9.9.25
+version               = 1.0.0
 display_name          = Hermes Core
 desc                  = Hermes Agent v0.20.0 自包含全能套件 — 本地内核 Gateway + 内置 dashboard Web UI + 原生终端，一个套件全搞定
 changelog             = v2 重构：内核升级到官方 v0.20.0，前端预构建进 fpk，空壳 app 指向 :9119 WebUI 配置
-arch                  = x86_64
+platform              = x86
 source                = thirdparty
 maintainer            = techysy
 maintainer_url        = https://github.com/techysy/hermes-core-fnos-v2
