@@ -111,11 +111,16 @@ else
     echo "[$(date '+%F %T')] upgrade: wizard empty, preserving existing gateway.env" >> "${LOG}"
 fi
 
-# 已安装则跳过
+# 已安装(升级场景): 旧 checkout 移走, 由下方离线/在线解压重建.
+# 不再跳过 — 源码 checkout 方案下 fpk 自带新 venv.tar.gz(含 .git), 升级必须重新解压,
+# 否则容器内仍是旧源码. 只备份 venv, 不动 hermes_home/gateway.env 等数据目录.
 if [ -x "${VENV}/bin/hermes" ]; then
-    echo "[$(date '+%F %T')] hermes already installed, skip" >> "${LOG}"
-    init_hermes_home
-    exit 0
+    echo "[$(date '+%F %T')] upgrade: existing hermes found, will rebuild venv from bundled checkout" >> "${LOG}"
+    # 保留旧 venv 到 .venv-old 以便回滚 (非必需, 磁盘够则留)
+    if [ -d "${VENV}" ]; then
+        rm -rf "${VENV}.old" 2>/dev/null
+        mv "${VENV}" "${VENV}.old" 2>/dev/null || true
+    fi
 fi
 
 # 修正 venv 的 shebang / pyvenv.cfg 绝对路径 → 当前部署路径
@@ -134,6 +139,22 @@ fix_venv_paths() {
     # 修正 pyvenv.cfg（home/executable 指向）
     if [ -f "${VENV_DIR}/pyvenv.cfg" ]; then
         sed -i "s|^home = .*|home = $(dirname "$(dirname "$PY_BIN")")|" "${VENV_DIR}/pyvenv.cfg" 2>/dev/null || true
+    fi
+    # 修正 editable 安装的路径: 打包时 venv/src/hermes-agent 的绝对路径 → 部署后新路径
+    # editable 的 finder/pth 指向打包机路径, 解压到 fnOS 后必须重写成 $VENV_DIR/src/hermes-agent
+    local SITE_PKG_DIR=""
+    SITE_PKG_DIR="$("$VENV_DIR/bin/python" -c 'import site,sys; print(site.getsitepackages()[0])' 2>/dev/null)"
+    local SRC_IN_VENV="${VENV_DIR}/src/hermes-agent"
+    if [ -n "$SITE_PKG_DIR" ] && [ -d "$SRC_IN_VENV" ]; then
+        for f in "$SITE_PKG_DIR"/__editable___hermes_agent_*_finder.py "$SITE_PKG_DIR"/__editable__.hermes_agent-*.pth; do
+            [ -f "$f" ] || continue
+            # 替换 finder.py 里指向旧 hermes-agent 源码根的任何绝对路径为新路径
+            sed -i "s|/home/[^']*/hermes-agent|$SRC_IN_VENV|g" "$f" 2>/dev/null || true
+            sed -i "s|/opt/[^']*/hermes-agent|$SRC_IN_VENV|g" "$f" 2>/dev/null || true
+            sed -i "s|/[A-Za-z0-9._-]*/\.build/venv/src/hermes-agent|$SRC_IN_VENV|g" "$f" 2>/dev/null || true
+            sed -i "s|/\([^/]*\)/\.build/venv/src/hermes-agent|$SRC_IN_VENV|g" "$f" 2>/dev/null || true
+        done
+        echo "[$(date '+%F %T')] editable src path → $SRC_IN_VENV" >> "${LOG}"
     fi
 }
 
@@ -161,7 +182,7 @@ fi
 # 在线模式 (A 方案)
 echo "[$(date '+%F %T')] online mode: creating venv at ${VENV}" >> "${LOG}"
 PY=/usr/bin/python3
-[ -x /vol4/@appcenter/python312/bin/python3.12 ] && PY=/vol4/@appcenter/python312/bin/python3.12
+[ -x /vol4/@appcenter/python311/bin/python3.11 ] && PY=/vol4/@appcenter/python311/bin/python3.11
 
 "${PY}" -m venv "${VENV}" >> "${LOG}" 2>&1
 if [ ! -x "${VENV}/bin/pip" ]; then

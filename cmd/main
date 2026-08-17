@@ -145,6 +145,19 @@ start() {
     # 确保飞书/微信消息平台插件就位 (配置了才安装)
     setup_plugins
 
+    # 网络代理 (面板「代理」分组配置, 存于 gateway.env) — export 给 hermes gateway 进程
+    # 让容器内 hermes update / 插件安装 / API 请求等可走 mihomo 等本地代理 (如 http://127.0.0.1:7890)
+    # 大小写都 export, 兼容 urllib/requests/git 等不同库读取习惯; NO_PROXY 保证内网/本机不走代理
+    if [ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]; then
+        export http_proxy="${HTTP_PROXY:-$http_proxy}"
+        export https_proxy="${HTTPS_PROXY:-$https_proxy}"
+        export HTTP_PROXY="$http_proxy"
+        export HTTPS_PROXY="$https_proxy"
+        export no_proxy="${NO_PROXY:-${no_proxy:-localhost,127.0.0.1,::1}}"
+        export NO_PROXY="$no_proxy"
+        log "proxy env: http_proxy=${http_proxy} https_proxy=${https_proxy} no_proxy=${NO_PROXY}"
+    fi
+
     cd "${DATA_DIR}"
     nohup "${HERMES_BIN}" gateway run >> "${LOG}" 2>&1 &
     echo $! > "${PID_FILE}"

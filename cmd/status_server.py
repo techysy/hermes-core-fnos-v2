@@ -169,7 +169,7 @@ def _handle_pty_ws(conn, sock, headers):
     print(f"[pty] _PTY_OK={_PTY_OK} HERMES_HOME={os.environ.get('HERMES_HOME','')!r}", flush=True)
     if not _PTY_OK:
         try:
-            sock.sendall(_ws_encode(b"\r\n\x1b[31mTerminal unavailable: Hermes PTY not available. Enable python312 runtime.\x1b[0m\r\n"))
+            sock.sendall(_ws_encode(b"\r\n\x1b[31mTerminal unavailable: Hermes PTY not available. Enable python311 runtime.\x1b[0m\r\n"))
         except Exception:
             pass
         try:
@@ -335,6 +335,9 @@ CONFIG_FIELDS = [
     ("DASHBOARD_ENABLED", "Dashboard 开关", False, "dash"),
     ("DASHBOARD_USER", "Dashboard 用户名", False, "dash"),
     ("DASHBOARD_PASSWORD", "Dashboard 密码", True, "dash"),
+    ("HTTP_PROXY", "HTTP 代理", False, "proxy"),
+    ("HTTPS_PROXY", "HTTPS 代理", False, "proxy"),
+    ("NO_PROXY", "不代理(No Proxy)", False, "proxy"),
     ("FEISHU_APP_ID", "飞书应用 App ID", False, "feishu"),
     ("FEISHU_APP_SECRET", "飞书应用 Secret", True, "feishu"),
     ("FEISHU_VERIFICATION_TOKEN", "飞书验证 Token(验证码)", True, "feishu"),
@@ -356,6 +359,7 @@ CONFIG_GROUPS = {
     "wechat": ("💬 微信", "wechat"),
     "qq": ("🐧 QQ", "qq"),
     "dingtalk": ("📌 钉钉", "dingtalk"),
+    "proxy": ("🌐 代理", "proxy"),
 }
 
 # 模型供应商 (参考 9Router providers 页)
@@ -1533,7 +1537,7 @@ def _render_group_fields(cfg, grp_key):
 def _form_fields(cfg):
     """配置面板: 内核/Dashboard 分组 (LLM 配置走安装向导+模型供应商页, 不再显示)."""
     parts = []
-    for grp_key in ("core", "dash"):
+    for grp_key in ("core", "dash", "proxy"):
         body = _render_group_fields(cfg, grp_key)
         if body:
             parts.append(body)

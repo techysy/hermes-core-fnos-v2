@@ -14,57 +14,100 @@ APP_DIR="${ROOT}/app"
 BUILD_DIR="${ROOT}/.build"
 VENV_TAR="${APP_DIR}/venv.tar.gz"
 
-# 内核版本（官方 tag）
-HERMES_TAG="v2026.8.3"          # v0.20.0
+# 内核版本（官方分支/tag）— v0.20.1 在 main 分支 (无独立 tag, 靠 hermes update git pull 升级)
+# 默认 main (最新); 若要锁版本可改具体 tag (如 v2026.8.3 = v0.20.0)
+HERMES_TAG="main"
 HERMES_REPO="https://github.com/NousResearch/hermes-agent"
 # 复用本机现成的 web_dist（若提供）
 WEB_DIST_SRC="${WEB_DIST_SRC:-/home/yangyu/.hermes/hermes-agent/hermes_cli/web_dist}"
 
-# Python 解释器（默认 python3.12，fnOS 需要 cp312 编译的 C 扩展）
+# Python 解释器（默认 python3.11，fnOS 用 python311 应用；兼容 31.31 的 v0.20.1 环境）
 PY="${PY:-}"
 if [ -z "$PY" ]; then
-    for cand in python3.12 /vol4/@appcenter/python312/bin/python3.12 /usr/bin/python3.12; do
+    for cand in python3.11 /vol4/@appcenter/python311/bin/python3.11 /usr/bin/python3.11; do
         [ -x "$cand" ] && PY="$cand" && break
     done
 fi
-[ -z "$PY" ] && { echo "❌ 未找到 python3.12（fnOS 需要 cp312）。可 PY=/path/to/python3.12 指定。"; exit 1; }
+[ -z "$PY" ] && { echo "❌ 未找到 python3.11。可 PY=/path/to/python3.11 指定。"; exit 1; }
 echo "使用 Python: $PY"
 
 mkdir -p "$BUILD_DIR" "$APP_DIR"
 
-echo "=== 1/5 拉取 Hermes v0.20.0 源码 ==="
+echo "=== 1/5 获取 Hermes 源码 git checkout (含 .git, 支持 hermes update) ==="
 cd "$BUILD_DIR"
-if [ ! -d "hermes-agent-src" ]; then
-    curl -fsSL -o hermes-agent.tar.gz "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/${HERMES_TAG}"
-    tar xzf hermes-agent.tar.gz
-    mv "hermes-agent-${HERMES_TAG#v}" hermes-agent-src 2>/dev/null || mv hermes-agent-* hermes-agent-src
+# 优先复用构建机上现成的 hermes-agent checkout (31.31 的 v0.20.1, 含 .git)
+# 否则 git clone 完整 checkout (必须含 .git, 供 hermes update 用)
+if [ ! -d "hermes-agent-src/.git" ]; then
+    # 尝试复用 31.31 原生环境
+    if [ -d "$HOME/.hermes/hermes-agent/.git" ]; then
+        echo "  复用 31.31 原生 checkout: $HOME/.hermes/hermes-agent"
+        cp -a "$HOME/.hermes/hermes-agent" hermes-agent-src 2>/dev/null || true
+    fi
+    # 若仍无 checkout, git clone (含 .git)
+    if [ ! -d "hermes-agent-src/.git" ]; then
+        echo "  git clone hermes-agent (${HERMES_TAG})..."
+        rm -rf hermes-agent-src
+        # 走代理可选: GIT_PROXY=http://127.0.0.1:7890
+        if [ -n "${GIT_PROXY:-}" ]; then
+            git -c http.proxy="$GIT_PROXY" clone --branch "${HERMES_TAG}" "https://github.com/NousResearch/hermes-agent.git" hermes-agent-src 2>&1 | tail -3
+        else
+            git clone --branch "${HERMES_TAG}" "https://github.com/NousResearch/hermes-agent.git" hermes-agent-src 2>&1 | tail -3
+        fi
+        # 修正 git remote (若有本地修改残留)
+        [ -d hermes-agent-src/.git ] && git -C hermes-agent-src checkout . 2>/dev/null || true
+    fi
 fi
 SRC="$BUILD_DIR/hermes-agent-src"
 echo "  源码目录: $SRC"
+[ -d "$SRC/.git" ] && echo "  ✅ .git 存在 (hermes update 可用)" || echo "  ⚠️ .git 缺失"
 
-echo "=== 2/5 创建 venv 并安装 v0.20.0 内核 ==="
+echo "=== 2/5 创建 venv + editable 安装 hermes-agent 源码 (git checkout, 支持 hermes update) ==="
 VENV_DIR="$BUILD_DIR/venv"
 if [ ! -x "$VENV_DIR/bin/hermes" ]; then
     "$PY" -m venv "$VENV_DIR"
     "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
-    # v0.20.0 官方禁止非 editable 构建 wheel，需设 HERMES_NIX_BUILD=1 绕过 guard，
-    # 构建 wheel 后安装（非 editable，避免路径依赖，可移植到 fnOS）
-    echo "  构建 hermes v0.20.0 wheel 并安装..."
-    (cd "$SRC" && HERMES_NIX_BUILD=1 "$VENV_DIR/bin/pip" wheel . --no-deps -w "$BUILD_DIR/wheels" >/dev/null 2>&1)
-    "$VENV_DIR/bin/pip" install "$BUILD_DIR"/wheels/hermes_agent-*.whl 2>&1 | tail -2 || {
-        echo "  wheel 安装失败，尝试从 GitHub 源码安装...";
-        HERMES_NIX_BUILD=1 "$VENV_DIR/bin/pip" install "git+https://github.com/NousResearch/hermes-agent@${HERMES_TAG}" 2>&1 | tail -2;
+    # 把源码 checkout 移入 venv/src/hermes-agent — 这样打包 venv.tar.gz 时
+    # 会自动包含源码 + .git, 部署后 editable 的 .pth 指向 venv/src/... 存在.
+    # (editable 若源码在 venv 外, tar 只打 venv 目录会漏掉源码, 部署后无法加载)
+    SRC_IN_VENV="${VENV_DIR}/src/hermes-agent"
+    if [ -d "$SRC/.git" ] && [ "$SRC" != "$SRC_IN_VENV" ]; then
+        echo "  源码 checkout 移入 venv: $SRC_IN_VENV"
+        mkdir -p "${VENV_DIR}/src"
+        rm -rf "$SRC_IN_VENV"
+        cp -a "$SRC" "$SRC_IN_VENV"
+        SRC="$SRC_IN_VENV"
+    fi
+    # editable 安装 hermes-agent 源码 checkout:
+    #   - hermes_cli/ 等从源码加载 (非 wheel)
+    #   - PROJECT_ROOT = 源码根 (含 .git) → hermes update 可 git pull
+    #   - 与 31.31 原生安装(v0.20.1 editable) 方式一致
+    echo "  editable 安装 hermes-agent 源码 (含 .git)..."
+    "$VENV_DIR/bin/pip" install -e "$SRC" 2>&1 | tail -5 || {
+        echo "  editable 安装失败, 尝试 --no-deps + 补依赖...";
+        "$VENV_DIR/bin/pip" install -e "$SRC" --no-deps 2>&1 | tail -3 || true;
     }
-    # 补装 gateway api_server 运行时依赖（aiohttp 不在 hermes 核心依赖，但 api_server 平台需要）
-    echo "  补装 gateway 运行时依赖 (aiohttp)..."
+    # 确保源码 checkout 的 .git 存在 (editable 保留在原位)
+    if [ -d "$SRC/.git" ]; then
+        echo "  .git 保留在源码根: $SRC/.git"
+    fi
+    # 标记 git 安装 (detect_install_method 识别为 'git')
+    # editable 时 PROJECT_ROOT 是源码根, .install_method 写在源码根
+    echo "git" > "$SRC/.install_method"
+    # 依赖: 若 editable 已解析则跳过; 若 PyPI 慢, 用 PIP_PROXY=http://127.0.0.1:7890
+    # 补装 gateway api_server 运行时依赖
     "$VENV_DIR/bin/pip" install aiohttp pyyaml cryptography 2>&1 | tail -2 || true
+    if [ -n "${PIP_PROXY:-}" ]; then
+        echo "  用代理补装缺失依赖 (PIP_PROXY=${PIP_PROXY})..."
+        "$VENV_DIR/bin/pip" install --proxy "$PIP_PROXY" aiohttp pyyaml cryptography 2>&1 | tail -2 || true
+    fi
 fi
 "$VENV_DIR/bin/hermes" --version
 
 echo "=== 3/5 复用/准备前端 web_dist ==="
 # 用 python 定位 site-packages 路径（可靠处理 glob）
 SITE_PKG="$("$VENV_DIR/bin/python" -c 'import site,sys; print(site.getsitepackages()[0])')"
-WEB_DIST_DEST="${SITE_PKG}/hermes_cli/web_dist"
+# editable 时 hermes_cli 在源码 (venv/src/hermes-agent), web_dist 目标指向源码
+WEB_DIST_DEST="${SRC}/hermes_cli/web_dist"
 echo "  web_dist 目标: ${WEB_DIST_DEST}"
 mkdir -p "${WEB_DIST_DEST}"
 # 优先复用本机现成 web_dist
@@ -75,7 +118,7 @@ if [ -d "$WEB_DIST_SRC" ] && [ -f "$WEB_DIST_SRC/index.html" ]; then
 else
     echo "  无现成 web_dist，从源码构建前端（需要 npm）..."
     (cd "$SRC" && npm install --workspace web --no-audit --no-fund 2>/dev/null; cd web && npm run build 2>/dev/null || echo "  ⚠️ npm build 失败，可能无预构建前端")
-    # 构建产物输出到 hermes_cli/web_dist，复制到 venv 内
+    # 构建产物输出到 hermes_cli/web_dist
     if [ -d "${SRC}/hermes_cli/web_dist" ]; then
         cp -r "${SRC}/hermes_cli/web_dist"/* "${WEB_DIST_DEST}/" 2>/dev/null || true
     fi
