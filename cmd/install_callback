@@ -94,19 +94,68 @@ EOF
     chmod 600 "${DATA_DIR}/gateway.env"
     echo "[$(date '+%F %T')] saved wizard config (first install, provider=${WIZ_PROVIDER})" >> "${LOG}"
 elif [ -n "${wizard_llm_provider:-}${wizard_llm_api_key:-}${wizard_llm_base_url:-}${wizard_api_server_key:-}" ]; then
-    # 更新场景: 向导显式传了供应商/token/内核 key 才更新, 避免清空已有配置
-    cat > "${DATA_DIR}/gateway.env" <<EOF
-API_SERVER_HOST="${wizard_api_server_host:-0.0.0.0}"
-API_SERVER_PORT="${wizard_api_server_port:-8642}"
-API_SERVER_KEY="${wizard_api_server_key:-webui-gateway-key-2026}"
-LLM_MODEL="${WIZ_MODEL}"
-LLM_BASE_URL="${WIZ_BASE_URL}"
-${WIZ_KEY_ENV}="${WIZ_API_KEY}"
-DASHBOARD_USER="${wizard_dashboard_user:-admin}"
-DASHBOARD_PASSWORD="${wizard_dashboard_password:-}"
-EOF
+    # 更新场景: 向导显式传了供应商/token/内核 key.
+    # ⚠️ 不能全量覆盖 gateway.env — 那样会丢失飞书/微信/代理等已有配置。
+    #    只更新 wizard 传入的字段, 未传入的保留原值 (2026-08-17 踩坑: 升级覆盖导致 FEISHU_APP_ID 丢失)
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import os, re
+path = '${DATA_DIR}/gateway.env'
+# 读取现有配置
+cfg = {}
+if os.path.exists(path):
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                k, _, v = line.partition('=')
+                cfg[k.strip()] = v.strip().strip('"').strip("'")
+# 只更新 wizard 显式传入的字段
+wizard_map = {
+    'wizard_api_server_host': 'API_SERVER_HOST',
+    'wizard_api_server_port': 'API_SERVER_PORT',
+    'wizard_api_server_key': 'API_SERVER_KEY',
+    'wizard_llm_model': 'LLM_MODEL',
+    'wizard_llm_base_url': 'LLM_BASE_URL',
+    'wizard_dashboard_user': 'DASHBOARD_USER',
+    'wizard_dashboard_password': 'DASHBOARD_PASSWORD',
+}
+for wiz_key, env_key in wizard_map.items():
+    wiz_val = os.environ.get(wiz_key, '')
+    if wiz_val:
+        cfg[env_key] = wiz_val
+# 供应商 API key
+provider_key = os.environ.get('WIZ_KEY_ENV', '')
+provider_val = os.environ.get('WIZ_API_KEY', '')
+if provider_key and provider_val:
+    cfg[provider_key] = provider_val
+LLM_BASE_URL = os.environ.get('WIZ_BASE_URL', '')
+if LLM_BASE_URL:
+    cfg['LLM_BASE_URL'] = LLM_BASE_URL
+LLM_MODEL = os.environ.get('WIZ_MODEL', '')
+if LLM_MODEL:
+    cfg['LLM_MODEL'] = LLM_MODEL
+# 写回
+with open(path, 'w') as f:
+    for k, v in sorted(cfg.items()):
+        f.write(f'{k}="{v}"\n')
+os.chmod(path, 0o600)
+print('updated wizard fields only')
+" 2>&1 | tail -3
+    else
+        # 兜底: 只更新 wizard 字段, 保留其他
+        local TMPF=/tmp/gateway.env.merged
+        cp "${DATA_DIR}/gateway.env" "$TMPF" 2>/dev/null || true
+        for key in API_SERVER_HOST API_SERVER_PORT API_SERVER_KEY LLM_MODEL LLM_BASE_URL DASHBOARD_USER DASHBOARD_PASSWORD; do
+            wiz_key="wizard_$(echo "$key" | tr '[:upper:]' '[:lower:]')"
+            val=$(eval "echo \${$wiz_key:-}")
+            [ -n "$val" ] && sed -i "s|^$key=.*|$key=\"$val\"|" "$TMPF" 2>/dev/null
+        done
+        cp "$TMPF" "${DATA_DIR}/gateway.env"
+        rm -f "$TMPF"
+    fi
     chmod 600 "${DATA_DIR}/gateway.env"
-    echo "[$(date '+%F %T')] saved wizard config (wizard had values, provider=${WIZ_PROVIDER})" >> "${LOG}"
+    echo "[$(date '+%F %T')] updated wizard fields only (preserved existing feishu/wechat/proxy config)" >> "${LOG}"
 else
     echo "[$(date '+%F %T')] upgrade: wizard empty, preserving existing gateway.env" >> "${LOG}"
 fi
